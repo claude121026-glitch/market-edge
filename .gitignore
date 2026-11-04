@@ -1,0 +1,4 @@
+market_edge/data/
+__pycache__/
+*.pyc
+.pytest_cache/

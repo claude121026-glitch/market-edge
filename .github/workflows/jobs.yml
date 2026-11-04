@@ -1,0 +1,94 @@
+# Market Edge scheduled jobs. GitHub cron is in UTC (IST = UTC + 5:30); runs can start a few minutes late.
+name: market-edge jobs
+
+on:
+  schedule:
+    - cron: "0 3 * * 1-5"        # 08:30 IST  morning brief
+    - cron: "25 3 * * 1-5"       # 08:55 IST  morning (backup; skips if already sent)
+    - cron: "0,30 4-9 * * 1-5"   # 09:30-15:00 IST  corporate red flags
+    - cron: "15,45 1-16 * * *"   # ~06:45-22:15 IST  macro news (alerts only for big items)
+    - cron: "5 13 * * 1-5"       # 18:35 IST  evening scan
+    - cron: "5 14 * * 1-5"       # 19:35 IST  evening (backup; skips if already reported)
+    - cron: "30 4 * * 6"         # Sat 10:00 IST  weekly backtest + keep-alive commit
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "bootstrap (first time), evening, morning, news, corp, prices, paper, backtest"
+        required: true
+        default: bootstrap
+
+permissions:
+  contents: write                # upload the data release; weekly keep-alive commit
+
+concurrency:                     # one data-writing job at a time
+  group: market-edge-data
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      TZ: Asia/Kolkata
+      GH_TOKEN: ${{ github.token }}
+      WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
+      WHATSAPP_APIKEY: ${{ secrets.WHATSAPP_APIKEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: market_edge/requirements.txt
+      - run: pip install -q -r market_edge/requirements.txt
+
+      - name: Pick the command for this schedule
+        id: pick
+        run: |
+          case "${{ github.event.schedule }}" in
+            "0 3 * * 1-5"|"25 3 * * 1-5")  c=morning ;;
+            "0,30 4-9 * * 1-5")            c=corp ;;
+            "15,45 1-16 * * *")            c=news ;;
+            "5 13 * * 1-5"|"5 14 * * 1-5") c=evening ;;
+            "30 4 * * 6")                  c=backtest ;;
+            *)                             c="${{ inputs.command }}" ;;
+          esac
+          echo "cmd=$c" >> "$GITHUB_OUTPUT"
+          echo "Running: $c"
+
+      - name: Get the latest data
+        run: bash market_edge/deploy/github/data.sh pull ${{ steps.pick.outputs.cmd == 'bootstrap' && '--allow-missing' || '' }}
+
+      - name: Bootstrap (first run only, ~10 min)
+        if: steps.pick.outputs.cmd == 'bootstrap'
+        run: |
+          python -m market_edge.run update --days 380
+          python -m market_edge.run backtest
+          python -m market_edge.run prices
+
+      - name: Merge today's live-tracker data
+        if: steps.pick.outputs.cmd == 'evening'
+        run: |
+          bash market_edge/deploy/github/data.sh pull-intraday "$(date +%Y%m%d)"
+          ls /tmp/intraday/*.db >/dev/null 2>&1 && python -m market_edge.run merge-intraday /tmp/intraday/*.db || true
+
+      - name: Run ${{ steps.pick.outputs.cmd }}
+        if: steps.pick.outputs.cmd != 'bootstrap'
+        run: python -m market_edge.run ${{ steps.pick.outputs.cmd }}
+
+      - name: Save the data
+        run: bash market_edge/deploy/github/data.sh push
+
+      - name: Weekly housekeeping and keep-alive
+        if: steps.pick.outputs.cmd == 'backtest'
+        run: |
+          bash market_edge/deploy/github/data.sh prune 14
+          # GitHub pauses schedules in repos with no activity for 60 days; a weekly commit prevents that.
+          mkdir -p status && date -Iseconds > status/last_backtest.txt
+          git config user.name "market-edge-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add status/last_backtest.txt
+          git commit -m "Weekly keep-alive" && git push || true

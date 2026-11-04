@@ -1,0 +1,63 @@
+# Market Edge live tracker. GitHub limits a job to 6 hours, so the trading day is split in two sessions.
+# Each session reads the latest data, tracks the watchlist, then uploads its intraday bars as a separate
+# file; the evening job merges them. Sessions don't block the other jobs.
+name: market-edge live
+
+on:
+  schedule:
+    - cron: "30 3 * * 1-5"       # 09:00 IST  morning session, runs until 12:10
+    - cron: "35 6 * * 1-5"       # 12:05 IST  afternoon session, runs until 15:35 and sends the day summary
+  workflow_dispatch:
+    inputs:
+      session:
+        description: "am or pm"
+        required: true
+        default: am
+
+permissions:
+  contents: write
+
+concurrency:
+  group: market-edge-live
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      TZ: Asia/Kolkata
+      GH_TOKEN: ${{ github.token }}
+      WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
+      WHATSAPP_APIKEY: ${{ secrets.WHATSAPP_APIKEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: market_edge/requirements.txt
+      - run: pip install -q -r market_edge/requirements.txt
+
+      - name: Which session
+        id: s
+        run: |
+          if [[ "${{ github.event.schedule }}" == "35 6 * * 1-5" || "${{ inputs.session }}" == "pm" ]]; then
+            echo "session=pm" >> "$GITHUB_OUTPUT"; echo "until=15:35" >> "$GITHUB_OUTPUT"
+          else
+            echo "session=am" >> "$GITHUB_OUTPUT"; echo "until=12:10" >> "$GITHUB_OUTPUT"
+          fi
+
+      - run: bash market_edge/deploy/github/data.sh pull
+
+      - name: Track the watchlist (${{ steps.s.outputs.session }})
+        run: python -m market_edge.run live --poll 60 --until ${{ steps.s.outputs.until }}
+
+      - name: Upload this session's intraday bars
+        if: always()
+        run: |
+          f="/tmp/intraday-$(date +%Y%m%d)-${{ steps.s.outputs.session }}.db"
+          python -m market_edge.run export-intraday "$f"
+          bash market_edge/deploy/github/data.sh push-file "$f"
