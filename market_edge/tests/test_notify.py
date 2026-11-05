@@ -26,3 +26,21 @@ def test_send_prints_without_channels(monkeypatch, capsys):
     for k in ("WHATSAPP_PHONE", "WHATSAPP_APIKEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
         monkeypatch.setattr(config, k, None)
     assert notify.send("plain") is False and "plain" in capsys.readouterr().out
+
+
+def test_telegram_html_escaping():
+    assert notify.to_telegram_html("<b>S&P 500</b> yield < 4% R&amp;D <i>x</i>") == \
+        "<b>S&amp;P 500</b> yield &lt; 4% R&amp;D <i>x</i>"
+
+
+def test_telegram_falls_back_to_plain_text_and_reports_reason(monkeypatch):
+    sent = []
+    def fake(text, mode):
+        sent.append((text, mode))
+        return (False, "Bad Request: can't parse entities: x") if mode == "HTML" else (True, "")
+    monkeypatch.setattr(notify, "_tg_request", fake)
+    assert notify._post_telegram("<b>S&P</b> ok") is True
+    assert sent[0][1] == "HTML" and sent[1] == ("S&P ok", None)
+
+    monkeypatch.setattr(notify, "_tg_request", lambda text, mode: (False, "Bad Request: chat not found"))
+    assert notify._post_telegram("hello") is False

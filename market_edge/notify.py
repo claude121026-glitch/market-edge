@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -46,18 +47,51 @@ def to_whatsapp(text: str) -> str:
     return html.unescape(t)
 
 
-def _post_telegram(text: str) -> bool:
+_TAG = re.compile(r"(</?(?:b|i)>)")
+_AMP = re.compile(r"&(?!#?\w+;)")          # an & that is not already part of an entity
+
+
+def to_telegram_html(text: str) -> str:
+    """Our messages use only <b> and <i>. Escape everything else so Telegram's HTML parser accepts it
+    (e.g. 'S&P 500', 'yield < 4%'), without double-escaping text that already holds entities."""
+    out = []
+    for piece in _TAG.split(text):
+        if _TAG.fullmatch(piece):
+            out.append(piece)
+        else:
+            out.append(_AMP.sub("&amp;", piece).replace("<", "&lt;").replace(">", "&gt;"))
+    return "".join(out)
+
+
+def _tg_request(text: str, parse_mode: str | None) -> tuple[bool, str]:
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+    fields = {"chat_id": config.TELEGRAM_CHAT_ID, "text": text, "disable_web_page_preview": "true"}
+    if parse_mode:
+        fields["parse_mode"] = parse_mode
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=urllib.parse.urlencode(fields).encode()),
+                                    timeout=20) as r:
+            return bool(json.loads(r.read()).get("ok", False)), ""
+    except urllib.error.HTTPError as e:           # Telegram explains itself in the response body
+        try:
+            return False, json.loads(e.read()).get("description", f"HTTP {e.code}")
+        except Exception:
+            return False, f"HTTP {e.code}"
+    except Exception as e:
+        return False, str(e)
+
+
+def _post_telegram(text: str) -> bool:
     ok = True
     for part in _chunks(text, TELEGRAM_LIMIT):
-        data = urllib.parse.urlencode({"chat_id": config.TELEGRAM_CHAT_ID, "text": part,
-                                       "parse_mode": "HTML", "disable_web_page_preview": "true"}).encode()
-        try:
-            with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=20) as r:
-                ok &= json.loads(r.read()).get("ok", False)
-        except Exception as e:
-            log.error("Telegram send failed: %s", e)
-            ok = False
+        sent, why = _tg_request(to_telegram_html(part), "HTML")
+        if not sent and "parse entities" in why:     # formatting problem: send it as plain text instead
+            log.warning("Telegram rejected the formatting (%s); resending as plain text", why)
+            plain = html.unescape(re.sub(r"<[^>]+>", "", part))
+            sent, why = _tg_request(plain, None)
+        if not sent:
+            log.error("Telegram send failed: %s", why)   # e.g. 'chat not found', 'Unauthorized'
+        ok &= sent
     return ok
 
 
