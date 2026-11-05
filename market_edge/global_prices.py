@@ -12,7 +12,7 @@ import urllib.parse
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from . import config, net
+from . import config, net, nse
 
 log = logging.getLogger("market_edge.global")
 IST = ZoneInfo("Asia/Kolkata")
@@ -109,6 +109,36 @@ def _alert(r: dict, kind: str, threshold: float, level_alert: float | None) -> s
     if level_alert is not None and r["price"] >= level_alert:
         msgs.append(f"{r['name']} at {r['price']:.1f} (≥ {level_alert}: fear elevated)")
     return " · ".join(msgs) or None
+
+
+def _move_level(r: dict, kind: str, threshold: float) -> int:
+    move = abs(r["chg_1d_abs"] * 100) if kind == "bp" else abs(r["chg_1d_pct"])
+    return int(move // threshold) if threshold else 0
+
+
+def new_alerts(payload: dict, today: str | None = None) -> list[str]:
+    """Alerts not yet sent today. A market alerts once when it first crosses its threshold and again only
+    if the move doubles, triples and so on, so a 30-minute refresh never repeats the same message."""
+    today = today or datetime.now(IST).date().isoformat()
+    spec = {t[1]: t for t in config.GLOBAL_TICKERS}
+    con = nse.connect()
+    con.execute("CREATE TABLE IF NOT EXISTS price_alerts (date TEXT, key TEXT, level INTEGER, PRIMARY KEY (date, key))")
+    out = []
+    for r in payload["prices"]:
+        if "price" not in r or r.get("stale") or r["key"] not in spec:
+            continue
+        _, key, _, _, kind, thr, lvl_alert = spec[r["key"]]
+        text = _alert(r, kind, thr, lvl_alert)
+        if not text:
+            continue
+        level = _move_level(r, kind, thr) + (1000 if lvl_alert is not None and r["price"] >= lvl_alert else 0)
+        prev = con.execute("SELECT level FROM price_alerts WHERE date=? AND key=?", (today, key)).fetchone()
+        if prev is None or level > prev[0]:
+            out.append(text)
+            con.execute("INSERT OR REPLACE INTO price_alerts VALUES (?,?,?)", (today, key, level))
+    con.commit()
+    con.close()
+    return out
 
 
 def india_read(p: dict) -> list[str]:

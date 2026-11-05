@@ -7,6 +7,8 @@
     python -m market_edge.run news                fetch + score macro news, alert on big items
                                                   (schedule every 15-30 min)
     python -m market_edge.run corp                announcements, bulk/block deals, FII/DII; alerts on red flags
+    python -m market_edge.run refresh             quiet 30-min update of prices + news + corporate data;
+                                                  messages only for NEW big moves, big news, red flags
     python -m market_edge.run backtest            replay the scan over the stored history (+ random baseline)
     python -m market_edge.run paper               live paper-trading results vs backtest
     python -m market_edge.run live [--poll 60]    track today's watchlist intraday (start ~9:05 IST)
@@ -68,6 +70,7 @@ def main():
     sub.add_parser("morning")
     sub.add_parser("news")
     sub.add_parser("corp")
+    sub.add_parser("refresh")
     sub.add_parser("backtest")
     sub.add_parser("paper")
     sub.add_parser("telegram-check")
@@ -116,6 +119,36 @@ def main():
             print("corporate data errors:", errors)
         if not a.date:
             _mark("evening", day)
+    elif a.cmd == "refresh":
+        summary = []
+        try:
+            prices = global_prices.run()
+            alerts = global_prices.new_alerts(prices)
+            if alerts:
+                notify.send("<b>⚠️ Market alerts</b>\n" + "\n".join(f"• {x}" for x in alerts))
+            fresh = sum(1 for p in prices["prices"] if "price" in p and not p.get("stale"))
+            summary.append(f"prices {fresh}/{len(prices['prices'])} fresh, {len(alerts)} alerts")
+        except Exception as ex:
+            summary.append(f"prices ERROR {type(ex).__name__}")
+            logging.error("prices refresh failed: %s", ex)
+        try:
+            res = macro_news.run()
+            for item in res["alerts"]:
+                notify.send(macro_news.format_alert(item))
+            summary.append(f"news {res['new']} new, {len(res['alerts'])} alerts ({res['scored_by']})")
+        except Exception as ex:
+            summary.append(f"news ERROR {type(ex).__name__}")
+            logging.error("news refresh failed: %s", ex)
+        try:
+            res = corporate.run()
+            flags = corporate.pending_alerts()
+            for al in flags:
+                notify.send(corporate.format_alert(al))
+            summary.append(f"corporate ok, {len(flags)} red flags")
+        except Exception as ex:
+            summary.append(f"corporate ERROR {type(ex).__name__}")
+            logging.error("corporate refresh failed: %s", ex)
+        print("refresh:", " | ".join(summary))
     elif a.cmd == "telegram-check":
         for line in notify.diagnose_telegram():
             print(line)

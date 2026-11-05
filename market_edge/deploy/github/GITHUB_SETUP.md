@@ -48,8 +48,7 @@ and creates the `data` release. A green tick means it worked. If it's red, open 
 |---|---|
 | 08:30 (backup 08:55) Mon–Fri | morning brief + watchlist |
 | 09:00–12:10 and 12:05–15:35 Mon–Fri | live tracker (two sessions); day summary at 15:20 |
-| every 30 min 09:30–15:00 Mon–Fri | corporate red flags |
-| every 30 min ~06:45–22:15 daily | macro news alerts (only big items) |
+| every 30 min, 06:40–23:10 Mon–Fri (hourly on weekends) | quiet refresh of global prices, macro news and corporate data. Messages only for a **new** big market move, big news or a red flag, and never repeated the same day |
 | 18:35 (backup 19:35) Mon–Fri | evening scan, FII/DII, announcements, deals |
 | Saturday 10:00 | backtest refresh + keep-alive commit |
 

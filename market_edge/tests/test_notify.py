@@ -70,3 +70,22 @@ def test_secrets_are_trimmed(monkeypatch):
     import importlib
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "  123 \n")
     assert importlib.reload(config).TELEGRAM_CHAT_ID == "123"
+
+
+def _payload(**chg):
+    rows = [{"key": k, "name": k, "price": 100.0, "chg_1d_pct": v, "chg_1d_abs": v, "stale": False}
+            for k, v in chg.items()]
+    return {"prices": rows}
+
+
+def test_price_alerts_are_not_repeated(tmp_path, monkeypatch):
+    from market_edge import global_prices as gp
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.db")
+    day = "2026-11-05"
+    assert len(gp.new_alerts(_payload(BRENT=3.5), day)) == 1          # first time over the 3% threshold
+    assert gp.new_alerts(_payload(BRENT=3.6), day) == []              # 30 min later: same alert, stay quiet
+    assert len(gp.new_alerts(_payload(BRENT=6.4), day)) == 1          # doubled: alert again
+    assert len(gp.new_alerts(_payload(BRENT=3.5), "2026-11-06")) == 1  # new day resets
+    assert gp.new_alerts(_payload(GOLD=0.5), day) == []               # below its threshold
+    stale = _payload(BRENT=9.0); stale["prices"][0]["stale"] = True
+    assert gp.new_alerts(stale, "2026-11-07") == []                    # stale values never alert

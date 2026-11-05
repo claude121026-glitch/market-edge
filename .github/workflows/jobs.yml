@@ -5,15 +5,15 @@ on:
   schedule:
     - cron: "0 3 * * 1-5"        # 08:30 IST  morning brief
     - cron: "25 3 * * 1-5"       # 08:55 IST  morning (backup; skips if already sent)
-    - cron: "0,30 4-9 * * 1-5"   # 09:30-15:00 IST  corporate red flags
-    - cron: "15,45 1-16 * * *"   # ~06:45-22:15 IST  macro news (alerts only for big items)
+    - cron: "10,40 1-17 * * 1-5" # every 30 min, 06:40-23:10 IST Mon-Fri: prices + news + corporate (quiet)
+    - cron: "40 1-16 * * 0,6"    # hourly on weekends, 07:10-22:10 IST
     - cron: "5 13 * * 1-5"       # 18:35 IST  evening scan
     - cron: "5 14 * * 1-5"       # 19:35 IST  evening (backup; skips if already reported)
     - cron: "30 4 * * 6"         # Sat 10:00 IST  weekly backtest + keep-alive commit
   workflow_dispatch:
     inputs:
       command:
-        description: "bootstrap (first time), evening, morning, news, corp, prices, paper, backtest"
+        description: "bootstrap (first time), refresh, evening, morning, news, corp, prices, paper, backtest, telegram-check"
         required: true
         default: bootstrap
 
@@ -50,8 +50,7 @@ jobs:
         run: |
           case "${{ github.event.schedule }}" in
             "0 3 * * 1-5"|"25 3 * * 1-5")  c=morning ;;
-            "0,30 4-9 * * 1-5")            c=corp ;;
-            "15,45 1-16 * * *")            c=news ;;
+            "10,40 1-17 * * 1-5"|"40 1-16 * * 0,6") c=refresh ;;
             "5 13 * * 1-5"|"5 14 * * 1-5") c=evening ;;
             "30 4 * * 6")                  c=backtest ;;
             *)                             c="${{ inputs.command }}" ;;
