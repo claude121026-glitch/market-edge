@@ -144,3 +144,21 @@ def test_export_and_merge_intraday(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "b.db")
     assert I.merge_files([str(tmp_path / "x.db")]) == 2
     assert len(I.load_bars(I.connect(), "ABC", DAY.isoformat())) == 2
+
+
+def test_live_waits_for_the_morning_ranking(tmp_path, monkeypatch):
+    sent = _one_pick(tmp_path, monkeypatch)
+    pulls = []
+
+    def fake_pull():                       # the morning job finished and ranked the watchlist
+        pulls.append(1)
+        c = I.connect()
+        c.execute("UPDATE paper_trades SET morning_rank=1 WHERE source='live'")
+        c.commit()
+        c.close()
+
+    clock = {"t": datetime.combine(DAY, dtime(8, 15), IST)}
+    res = I.run_live(poll=3600, until=dtime(9, 0), now_fn=lambda: clock["t"],
+                     sleep_fn=lambda s: clock.__setitem__("t", clock["t"] + timedelta(seconds=s)),
+                     fetch_fn=lambda sym, day: ([], "test"), refresh_fn=fake_pull)
+    assert pulls == [1] and res.get("partial") and any("Live tracker started" in m for m in sent)

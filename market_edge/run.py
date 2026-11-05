@@ -73,6 +73,96 @@ def _latest_date() -> str | None:
     return d
 
 
+def run_evening(date_arg: str | None = None, no_update: bool = False, force: bool = False) -> bool:
+    """Evening scan + corporate data + reports. Returns False when today's report was already sent."""
+    if not no_update:
+        nse.update(days_back=7)
+    latest = _latest_date()
+    if not date_arg and not force and _done("evening", latest):
+        print(f"evening: {latest} already reported (today's NSE file not out yet, or a backup run). Skipping.")
+        return False
+    rep = evening_scan.run(date_arg)
+    day = rep["scan_date"]
+    corp = corporate.run(date.fromisoformat(day))
+    evening_scan.attach_catalysts(rep, corporate.catalysts_by_symbol(day))
+    (config.REPORT_DIR / f"evening_{day}.json").write_text(json.dumps(rep, indent=2, default=str))
+    evaluated = paper.evaluate_pending()           # yesterday's picks vs today's prices
+    recorded = paper.record_from_report(rep)       # today's picks become tomorrow's paper trades
+    try:
+        exact = intraday.resolve("live", days=5)   # exact scoring from stored intraday bars
+    except Exception as ex_:
+        exact = f"error: {ex_}"
+    print(f"paper log: {evaluated} evaluated, {recorded} new · exact: {exact}")
+    notify.send(evening_scan.format_telegram(rep), images=_cards(lambda c: c.scan_cards(rep)))
+    flows, anns = corporate.fii_dii_summary(), corporate.announcements_for(day)
+    results, deals = corporate.results_filed(day), corporate.deal_summary(day)
+    extra = [corporate.format_fii_dii(flows), corporate.format_announcements(anns, results=results),
+             corporate.format_deals(deals)]
+    extra = "\n\n".join(x for x in extra if x)
+    if extra:
+        notify.send(extra, images=_cards(lambda c: [c.corporate_card(flows, anns, results, deals, day)]))
+    errors = {k: v for k, v in corp.items() if isinstance(v, str) and v.startswith("error")}
+    if errors:
+        print("corporate data errors:", errors)
+    if not date_arg:
+        _mark("evening", day)
+    return True
+
+
+def run_morning(force: bool = False) -> bool:
+    """Morning brief + watchlist. Returns False when today's brief was already sent."""
+    today = datetime.now(IST).date().isoformat()
+    if not force and _done("morning", today):
+        print(f"morning: already sent for {today}. Skipping.")
+        return False
+    prices = global_prices.run()
+    notify.send(global_prices.format_telegram(prices), images=_cards(lambda c: [c.prices_card(prices)]))
+    try:
+        macro_news.run()  # pick up overnight news first
+    except Exception as ex:
+        logging.error("news refresh failed: %s", ex)
+    news = macro_news.recent(hours=18, min_importance=4)
+    flows = corporate.fii_dii_summary()
+    mood = macro_news.macro_score(news, prices, flows)
+    sectors, evs = macro_news.sector_view(news), events.upcoming(days=7)
+    brief = macro_news.format_brief(news, mood)
+    if flows:
+        brief += "\n\n" + corporate.format_fii_dii(flows)
+    cal = events.format_upcoming(evs)
+    now_ist = datetime.now(IST)
+    label = f"{now_ist:%a} {now_ist.day} {now_ist:%b %Y}"
+    notify.send(brief + ("\n\n" + cal if cal else ""),
+                images=_cards(lambda c: c.brief_cards(news, mood, flows, sectors, evs, label)))
+    reports = sorted(config.REPORT_DIR.glob("evening_*.json"))
+    if reports:
+        rep = json.loads(reports[-1].read_text())
+        top = watchlist.build(rep, mood, sectors)
+        notify.send(watchlist.format_telegram(top, rep["scan_date"]),
+                    images=_cards(lambda c: [c.watchlist_card(top, rep["scan_date"])]))
+    _mark("morning", today)
+    return True
+
+
+def _catch_up() -> list[str]:
+    """GitHub sometimes starts or drops a scheduled run. The 30-minute refresh therefore also sends a
+    morning brief or evening report that has not gone out yet (each is guarded: at most once a day)."""
+    now = datetime.now(IST)
+    done = []
+    if now.weekday() >= 5:
+        return done
+    try:
+        if now.time() >= dtime(8, 10) and run_morning():
+            done.append("morning brief")
+    except Exception as ex:
+        logging.error("catch-up morning failed: %s", ex)
+    try:
+        if now.time() >= dtime(18, 20) and run_evening(None, False, False):
+            done.append("evening report")
+    except Exception as ex:
+        logging.error("catch-up evening failed: %s", ex)
+    return done
+
+
 def main():
     ap = argparse.ArgumentParser(prog="market_edge")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -102,37 +192,7 @@ def main():
         print("companies:", nse.update_companies())
         print("new trading dates:", nse.update(days_back=a.days))
     elif a.cmd == "evening":
-        if not a.no_update:
-            nse.update(days_back=7)
-        latest = _latest_date()
-        if not a.date and not a.force and _done("evening", latest):
-            print(f"evening: {latest} already reported (today's NSE file not out yet, or a backup run). Skipping.")
-            return
-        rep = evening_scan.run(a.date)
-        day = rep["scan_date"]
-        corp = corporate.run(date.fromisoformat(day))
-        evening_scan.attach_catalysts(rep, corporate.catalysts_by_symbol(day))
-        (config.REPORT_DIR / f"evening_{day}.json").write_text(json.dumps(rep, indent=2, default=str))
-        evaluated = paper.evaluate_pending()           # yesterday's picks vs today's prices
-        recorded = paper.record_from_report(rep)       # today's picks become tomorrow's paper trades
-        try:
-            exact = intraday.resolve("live", days=5)   # exact scoring from stored intraday bars
-        except Exception as ex_:
-            exact = f"error: {ex_}"
-        print(f"paper log: {evaluated} evaluated, {recorded} new · exact: {exact}")
-        notify.send(evening_scan.format_telegram(rep), images=_cards(lambda c: c.scan_cards(rep)))
-        flows, anns = corporate.fii_dii_summary(), corporate.announcements_for(day)
-        results, deals = corporate.results_filed(day), corporate.deal_summary(day)
-        extra = [corporate.format_fii_dii(flows), corporate.format_announcements(anns, results=results),
-                 corporate.format_deals(deals)]
-        extra = "\n\n".join(x for x in extra if x)
-        if extra:
-            notify.send(extra, images=_cards(lambda c: [c.corporate_card(flows, anns, results, deals, day)]))
-        errors = {k: v for k, v in corp.items() if isinstance(v, str) and v.startswith("error")}
-        if errors:
-            print("corporate data errors:", errors)
-        if not a.date:
-            _mark("evening", day)
+        run_evening(a.date, a.no_update, a.force)
     elif a.cmd == "refresh":
         summary = []
         try:
@@ -162,6 +222,9 @@ def main():
         except Exception as ex:
             summary.append(f"corporate ERROR {type(ex).__name__}")
             logging.error("corporate refresh failed: %s", ex)
+        late = _catch_up()
+        if late:
+            summary.append("sent late: " + ", ".join(late))
         print("refresh:", " | ".join(summary))
     elif a.cmd == "telegram-check":
         for line in notify.diagnose_telegram():
@@ -217,35 +280,7 @@ def main():
         if bad:
             print("feeds failing:", ", ".join(bad))
     elif a.cmd == "morning":
-        today = datetime.now(IST).date().isoformat()
-        if not a.force and _done("morning", today):
-            print(f"morning: already sent for {today}. Skipping.")
-            return
-        prices = global_prices.run()
-        notify.send(global_prices.format_telegram(prices), images=_cards(lambda c: [c.prices_card(prices)]))
-        try:
-            macro_news.run()  # pick up overnight news first
-        except Exception as ex:
-            logging.error("news refresh failed: %s", ex)
-        news = macro_news.recent(hours=18, min_importance=4)
-        flows = corporate.fii_dii_summary()
-        mood = macro_news.macro_score(news, prices, flows)
-        sectors, evs = macro_news.sector_view(news), events.upcoming(days=7)
-        brief = macro_news.format_brief(news, mood)
-        if flows:
-            brief += "\n\n" + corporate.format_fii_dii(flows)
-        cal = events.format_upcoming(evs)
-        now_ist = datetime.now(IST)
-        label = f"{now_ist:%a} {now_ist.day} {now_ist:%b %Y}"
-        notify.send(brief + ("\n\n" + cal if cal else ""),
-                    images=_cards(lambda c: c.brief_cards(news, mood, flows, sectors, evs, label)))
-        reports = sorted(config.REPORT_DIR.glob("evening_*.json"))
-        if reports:
-            rep = json.loads(reports[-1].read_text())
-            top = watchlist.build(rep, mood, sectors)
-            notify.send(watchlist.format_telegram(top, rep["scan_date"]),
-                        images=_cards(lambda c: [c.watchlist_card(top, rep["scan_date"])]))
-        _mark("morning", today)
+        run_morning(a.force)
 
 
 if __name__ == "__main__":

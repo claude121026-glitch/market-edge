@@ -46,15 +46,15 @@ and creates the `data` release. A green tick means it worked. If it's red, open 
 
 | Time | Job |
 |---|---|
-| 08:30 (backup 08:55) Mon–Fri | morning brief + watchlist |
-| 09:00–12:10 and 12:05–15:35 Mon–Fri | live tracker (two sessions); day summary at 15:20 |
-| every 30 min, 06:40–23:10 Mon–Fri (hourly on weekends) | quiet refresh of global prices, macro news and corporate data. Messages only for a **new** big market move, big news or a red flag, and never repeated the same day |
-| 18:35 (backup 19:35) Mon–Fri | evening scan, FII/DII, announcements, deals |
+| 07:50 (backup 08:20) Mon–Fri | morning brief + watchlist |
+| 08:15–13:00 and 12:50–15:35 Mon–Fri | live tracker (two overlapping-safe sessions); waits for the 09:15 open; day summary at 15:20 |
+| every 30 min, 06:40–23:10 Mon–Fri (hourly on weekends) | quiet refresh of global prices, macro news and corporate data. Messages only for a **new** big market move, big news or a red flag. It also **sends a missed morning brief or evening report** (catch-up) |
+| 18:20, 18:50, 19:35, 20:40 Mon–Fri | evening scan, FII/DII, announcements, deals (the first run that finds today's NSE file does the work; the others skip) |
 | Saturday 10:00 | backtest refresh + keep-alive commit |
 
 ## Good to know
-- **GitHub may start scheduled jobs late**, usually by a few minutes and sometimes up to 30. Backups cover the
-  morning and evening jobs, and they never send twice.
+- **GitHub may start scheduled jobs late**, often 30–75 minutes. Jobs are scheduled earlier to allow for that, backups cover
+  the morning and evening jobs, and the 30-minute refresh sends any report that is still missing. Nothing is sent twice.
 - **NSE might block GitHub's servers.** The bootstrap run tells us. If it fails on NSE downloads, we'll switch options.
 - **The repo and the data release are public.** They hold code, prices, news and paper trades; your keys stay in Secrets.
 - **GitHub pauses schedules** in repos with no activity for 60 days; the Saturday job makes a small commit to prevent it.

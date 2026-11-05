@@ -5,8 +5,8 @@ name: market-edge live
 
 on:
   schedule:
-    - cron: "30 3 * * 1-5"       # 09:00 IST  morning session, runs until 12:10
-    - cron: "35 6 * * 1-5"       # 12:05 IST  afternoon session, runs until 15:35 and sends the day summary
+    - cron: "45 2 * * 1-5"       # 08:15 IST  morning session (waits for the 09:15 open), runs until 13:00
+    - cron: "20 7 * * 1-5"       # 12:50 IST  afternoon session, runs until 15:35 and sends the day summary
   workflow_dispatch:
     inputs:
       session:
@@ -24,7 +24,7 @@ concurrency:
 jobs:
   live:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 345
     env:
       TZ: Asia/Kolkata
       GH_TOKEN: ${{ github.token }}
@@ -44,10 +44,10 @@ jobs:
       - name: Which session
         id: s
         run: |
-          if [[ "${{ github.event.schedule }}" == "35 6 * * 1-5" || "${{ inputs.session }}" == "pm" ]]; then
+          if [[ "${{ github.event.schedule }}" == "20 7 * * 1-5" || "${{ inputs.session }}" == "pm" ]]; then
             echo "session=pm" >> "$GITHUB_OUTPUT"; echo "until=15:35" >> "$GITHUB_OUTPUT"
           else
-            echo "session=am" >> "$GITHUB_OUTPUT"; echo "until=12:10" >> "$GITHUB_OUTPUT"
+            echo "session=am" >> "$GITHUB_OUTPUT"; echo "until=13:00" >> "$GITHUB_OUTPUT"
           fi
 
       - run: bash market_edge/deploy/github/data.sh pull

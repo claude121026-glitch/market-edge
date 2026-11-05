@@ -236,11 +236,33 @@ def _fmt_level(t: dict) -> str:
     return f"trigger {t['trigger']:,.2f} · SL {t['stop']:,.2f} · Tgt {t['target']:,.2f}"
 
 
+def _pull_from_release():
+    """On GitHub Actions: re-download the latest data (the morning job may have ranked the watchlist since)."""
+    import os
+    import subprocess
+    script = "market_edge/deploy/github/data.sh"
+    if os.getenv("GITHUB_ACTIONS") and os.path.exists(script):
+        return lambda: subprocess.run(["bash", script, "pull"], check=False, capture_output=True, timeout=300)
+    return None
+
+
 def run_live(poll: int = 60, until: dtime = dtime(15, 35), now_fn=lambda: datetime.now(IST),
-             sleep_fn=time.sleep, fetch_fn=fetch_path) -> dict:
+             sleep_fn=time.sleep, fetch_fn=fetch_path, refresh_fn="auto") -> dict:
     con = connect()
     picks = todays_watchlist(con)
     today = now_fn().date()
+    if refresh_fn == "auto":
+        refresh_fn = _pull_from_release()
+    # Started before the morning brief ranked the watchlist? Wait (until 9:10) and re-read the data.
+    while refresh_fn and picks and not any(p.get("morning_rank") for p in picks) and now_fn().time() < dtime(9, 10):
+        sleep_fn(300)
+        try:
+            refresh_fn()
+        except Exception as e:
+            log.warning("data refresh failed: %s", e)
+        con.close()
+        con = connect()
+        picks = todays_watchlist(con)
     if not picks:
         notify.send("📡 Live tracker: no watchlist found. Run `evening` (and `morning`) first.")
         return {"tracked": 0}

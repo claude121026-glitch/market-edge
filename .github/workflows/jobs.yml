@@ -3,12 +3,14 @@ name: market-edge jobs
 
 on:
   schedule:
-    - cron: "0 3 * * 1-5"        # 08:30 IST  morning brief
-    - cron: "25 3 * * 1-5"       # 08:55 IST  morning (backup; skips if already sent)
+    - cron: "20 2 * * 1-5"       # 07:50 IST  morning brief (GitHub often starts runs 30-60 min late)
+    - cron: "50 2 * * 1-5"       # 08:20 IST  morning (backup; skips if already sent)
     - cron: "10,40 1-17 * * 1-5" # every 30 min, 06:40-23:10 IST Mon-Fri: prices + news + corporate (quiet)
     - cron: "40 1-16 * * 0,6"    # hourly on weekends, 07:10-22:10 IST
-    - cron: "5 13 * * 1-5"       # 18:35 IST  evening scan
-    - cron: "5 14 * * 1-5"       # 19:35 IST  evening (backup; skips if already reported)
+    - cron: "50 12 * * 1-5"      # 18:20 IST  evening scan (skips until NSE has published today's file)
+    - cron: "20 13 * * 1-5"      # 18:50 IST  evening (backup)
+    - cron: "5 14 * * 1-5"       # 19:35 IST  evening (backup)
+    - cron: "10 15 * * 1-5"      # 20:40 IST  evening (last backup)
     - cron: "30 4 * * 6"         # Sat 10:00 IST  weekly backtest + keep-alive commit
   workflow_dispatch:
     inputs:
@@ -49,9 +51,9 @@ jobs:
         id: pick
         run: |
           case "${{ github.event.schedule }}" in
-            "0 3 * * 1-5"|"25 3 * * 1-5")  c=morning ;;
+            "20 2 * * 1-5"|"50 2 * * 1-5")  c=morning ;;
             "10,40 1-17 * * 1-5"|"40 1-16 * * 0,6") c=refresh ;;
-            "5 13 * * 1-5"|"5 14 * * 1-5") c=evening ;;
+            "50 12 * * 1-5"|"20 13 * * 1-5"|"5 14 * * 1-5"|"10 15 * * 1-5") c=evening ;;
             "30 4 * * 6")                  c=backtest ;;
             *)                             c="${{ inputs.command }}" ;;
           esac
