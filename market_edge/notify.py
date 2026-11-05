@@ -125,3 +125,59 @@ def send(text: str) -> bool:
     if os.getenv("ME_ECHO"):
         print(text)
     return sent
+
+
+# --------------------------------------------------------------------------- #
+# Diagnostics (safe to run in public CI logs: prints yes/no results and lengths, never secrets)
+# --------------------------------------------------------------------------- #
+def _tg_api(method: str) -> dict:
+    url = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN', '').strip()}/{method}"
+    try:
+        with urllib.request.urlopen(url, timeout=20) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        try:
+            return json.loads(e.read())
+        except Exception:
+            return {"ok": False, "description": f"HTTP {e.code}"}
+    except Exception as e:                      # never include the exception text: it can hold the URL
+        return {"ok": False, "description": type(e).__name__}
+
+
+def diagnose_telegram(api=_tg_api) -> list[str]:
+    raw_chat = os.getenv("TELEGRAM_CHAT_ID", "")
+    raw_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    out = []
+    if not raw_token.strip():
+        return ["TELEGRAM_BOT_TOKEN secret is empty or missing."]
+    out.append(f"TELEGRAM_BOT_TOKEN: set, {len(raw_token.strip())} chars"
+               + (" (had stray spaces/newline, now trimmed)" if raw_token != raw_token.strip() else ""))
+    out.append(f"TELEGRAM_CHAT_ID: {'set' if raw_chat.strip() else 'EMPTY'}, {len(raw_chat.strip())} chars, "
+               f"{'digits only' if raw_chat.strip().lstrip('-').isdigit() else 'NOT a plain number'}"
+               + (" (had stray spaces/newline, now trimmed)" if raw_chat != raw_chat.strip() else ""))
+    me = api("getMe")
+    if not me.get("ok"):
+        return out + [f"Token rejected by Telegram: {me.get('description')}. Check TELEGRAM_BOT_TOKEN."]
+    out.append(f"Token OK: this is bot @{me['result'].get('username')}  <- must be the bot you pressed Start on")
+    if raw_chat.strip() == str(me["result"]["id"]):
+        return out + ["TELEGRAM_CHAT_ID is the BOT's own id (the digits at the start of the token). "
+                      "Use the number after \"chat\":{\"id\": from getUpdates instead."]
+    up = api("getUpdates")
+    if not up.get("ok"):
+        return out + [f"Couldn't read messages sent to the bot: {up.get('description')}"]
+    chats = set()
+    for u in up.get("result", []):
+        for key in ("message", "edited_message", "channel_post", "my_chat_member"):
+            if key in u and "chat" in u[key]:
+                chats.add(str(u[key]["chat"]["id"]))
+    if not chats:
+        return out + ["The bot has received NO messages in the last 24 hours. In Telegram open this bot, press Start, "
+                      "send 'hi', then run this check again."]
+    if raw_chat.strip() in chats:
+        out.append(f"OK: TELEGRAM_CHAT_ID matches one of the {len(chats)} chat(s) that messaged this bot.")
+    else:
+        out.append(f"MISMATCH: TELEGRAM_CHAT_ID matches none of the {len(chats)} chat(s) that messaged this bot. "
+                   f"Saved value has {len(raw_chat.strip())} chars; the chat id(s) seen have "
+                   f"{sorted(len(c) for c in chats)} chars. Re-copy the number after \"chat\":{{\"id\": from getUpdates "
+                   f"for THIS bot and update the secret.")
+    return out

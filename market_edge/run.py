@@ -70,6 +70,7 @@ def main():
     sub.add_parser("corp")
     sub.add_parser("backtest")
     sub.add_parser("paper")
+    sub.add_parser("telegram-check")
     lv = sub.add_parser("live"); lv.add_argument("--poll", type=int, default=60)
     lv.add_argument("--until", default="15:35", help="HH:MM IST to stop (e.g. 12:10 for a morning-only run)")
     ex = sub.add_parser("export-intraday"); ex.add_argument("out"); ex.add_argument("--date")
@@ -115,6 +116,9 @@ def main():
             print("corporate data errors:", errors)
         if not a.date:
             _mark("evening", day)
+    elif a.cmd == "telegram-check":
+        for line in notify.diagnose_telegram():
+            print(line)
     elif a.cmd == "backtest":
         print(paper.backtest())
         edge = paper.setup_edge()

@@ -27,11 +27,11 @@ TOP_BEARISH = 10
 HISTORY_DAYS = 380                     # calendar days to backfill (~252 sessions for 52-week)
 
 # ---- Telegram (optional) ------------------------------------------------- #
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip() or None   # secrets often carry stray spaces/newlines
+TELEGRAM_CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID") or "").strip() or None   # secrets often carry stray spaces/newlines
 # ---- WhatsApp via CallMeBot (optional, free for personal use; see notify.py) ---- #
-WHATSAPP_PHONE = os.getenv("WHATSAPP_PHONE")      # with country code, e.g. +919876543210
-WHATSAPP_APIKEY = os.getenv("WHATSAPP_APIKEY")
+WHATSAPP_PHONE = (os.getenv("WHATSAPP_PHONE") or "").strip() or None   # secrets often carry stray spaces/newlines      # with country code, e.g. +919876543210
+WHATSAPP_APIKEY = (os.getenv("WHATSAPP_APIKEY") or "").strip() or None   # secrets often carry stray spaces/newlines
 
 # ---- Global prices ------------------------------------------------------- #
 # kind: "pct" -> alert on % change, "bp" -> alert on basis-point change (yields)

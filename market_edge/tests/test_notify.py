@@ -44,3 +44,29 @@ def test_telegram_falls_back_to_plain_text_and_reports_reason(monkeypatch):
 
     monkeypatch.setattr(notify, "_tg_request", lambda text, mode: (False, "Bad Request: chat not found"))
     assert notify._post_telegram("hello") is False
+
+
+def _fake_api(me_id=555, updates=()):
+    def api(method):
+        if method == "getMe":
+            return {"ok": True, "result": {"id": me_id, "username": "my_bot"}}
+        return {"ok": True, "result": [{"message": {"chat": {"id": c}}} for c in updates]}
+    return api
+
+
+def test_diagnose_telegram_cases(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "555:abc")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", " 987654321\n")
+    ok = "\n".join(notify.diagnose_telegram(_fake_api(updates=[987654321])))
+    assert "@my_bot" in ok and "OK: TELEGRAM_CHAT_ID matches" in ok and "stray spaces" in ok
+    assert "987654321" not in ok and "555:abc" not in ok                       # never prints secrets
+    assert "MISMATCH" in "\n".join(notify.diagnose_telegram(_fake_api(updates=[111222333])))
+    assert "NO messages" in "\n".join(notify.diagnose_telegram(_fake_api(updates=[])))
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "555")
+    assert "BOT's own id" in "\n".join(notify.diagnose_telegram(_fake_api()))
+
+
+def test_secrets_are_trimmed(monkeypatch):
+    import importlib
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "  123 \n")
+    assert importlib.reload(config).TELEGRAM_CHAT_ID == "123"
