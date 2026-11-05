@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -113,15 +114,73 @@ def _get_whatsapp(text: str) -> bool:
     return ok
 
 
-def send(text: str) -> bool:
-    """Send to every configured channel. Never raises: a failed alert must not stop a job."""
+def _multipart(fields: dict, file_field: str, filename: str, data: bytes, mime: str = "image/png") -> tuple[bytes, str]:
+    boundary = uuid.uuid4().hex
+    parts = []
+    for k, v in fields.items():
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
+    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
+                 f"Content-Type: {mime}\r\n\r\n".encode() + data + b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode())
+    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
+
+
+def _tg_photo(png: bytes, caption: str | None = None) -> tuple[bool, str]:
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendPhoto"
+    fields = {"chat_id": config.TELEGRAM_CHAT_ID}
+    if caption:
+        fields["caption"] = caption[:1000]
+    body, ctype = _multipart(fields, "photo", "card.png", png)
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=body, headers={"Content-Type": ctype}),
+                                    timeout=90) as r:
+            return bool(json.loads(r.read()).get("ok", False)), ""
+    except urllib.error.HTTPError as e:
+        try:
+            return False, json.loads(e.read()).get("description", f"HTTP {e.code}")
+        except Exception:
+            return False, f"HTTP {e.code}"
+    except Exception as e:
+        return False, type(e).__name__
+
+
+def _caption(text: str) -> str:
+    first = next((l for l in text.splitlines() if l.strip()), "")
+    return html.unescape(re.sub(r"<[^>]+>", "", first)).strip()
+
+
+def send(text: str, images: list[bytes] | None = None) -> bool:
+    """Send to every configured channel. Never raises: a failed alert must not stop a job.
+
+    WhatsApp (CallMeBot) is text-only. Telegram gets the image cards when given, and falls back to the
+    text if any image is rejected. With no channel configured, text is printed and cards are saved."""
+    wa = bool(config.WHATSAPP_PHONE and config.WHATSAPP_APIKEY)
+    tg = bool(config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID)
     sent = False
-    if config.WHATSAPP_PHONE and config.WHATSAPP_APIKEY:
+    if wa:
         sent |= _get_whatsapp(text)
-    if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
-        sent |= _post_telegram(text)
-    if not (config.WHATSAPP_PHONE and config.WHATSAPP_APIKEY) and not (config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID):
+    if tg:
+        done = False
+        if images:
+            done = True
+            for i, png in enumerate(images):
+                ok, why = _tg_photo(png, _caption(text) if i == 0 else None)
+                if not ok:
+                    log.error("Telegram image %d/%d failed (%s); sending the text version instead", i + 1, len(images), why)
+                    done = False
+                    break
+                if i + 1 < len(images):
+                    time.sleep(0.7)               # keep the cards in order and under Telegram's rate limit
+        sent |= done or _post_telegram(text)
+    if not wa and not tg:
         print(text)
+        if images:
+            out = config.REPORT_DIR / "cards"
+            out.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            for i, png in enumerate(images, 1):
+                (out / f"{stamp}-{i}.png").write_bytes(png)
+            print(f"[{len(images)} image card(s) saved in {out}]")
     if os.getenv("ME_ECHO"):
         print(text)
     return sent

@@ -114,3 +114,6 @@ SEBI_PCT = 0.0001              # Rs 10 per crore
 STAMP_BUY_PCT = 0.003          # buy side
 GST_PCT = 18.0                 # on brokerage + exchange + SEBI
 WATCHLIST_SIZE = 10
+
+# Send report cards to Telegram as images (set ME_IMAGES=0 for text only)
+IMAGES = os.getenv("ME_IMAGES", "1") != "0"

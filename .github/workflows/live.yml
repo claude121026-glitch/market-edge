@@ -38,8 +38,8 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: market_edge/requirements.txt
-      - run: pip install -q -r market_edge/requirements.txt
+          cache-dependency-path: market_edge/requirements-ci.txt
+      - run: pip install -q -r market_edge/requirements-ci.txt
 
       - name: Which session
         id: s
