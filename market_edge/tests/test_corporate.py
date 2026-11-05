@@ -60,3 +60,8 @@ def test_fii_dii_summary_and_score(tmp_path, monkeypatch):
     assert s["FII"]["streak"] == 2 and round(s["FII"]["net_period"]) == 8284 and s["DII"]["streak"] == -1
     assert "2-day buying streak" in c.format_fii_dii(s)
     assert macro_news.macro_score([], None, s)["flows_component"] == 0.5
+
+
+def test_no_records_placeholder_is_empty():
+    raw = b"Date,Symbol,Security Name,Client Name,Buy/Sell,Quantity Traded,Trade Price / Wght. Avg. Price\nNO RECORDS,,,,,,\n"
+    assert c.parse_deals(raw, "block").empty

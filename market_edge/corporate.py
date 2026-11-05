@@ -206,7 +206,7 @@ def parse_deals(raw: bytes, kind: str) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["date", "kind", "symbol", "name", "client", "side", "qty", "price"])
     out = pd.DataFrame({
-        "date": pd.to_datetime(df["Date"].str.strip(), format="%d-%b-%Y").dt.strftime("%Y-%m-%d"),
+        "date": pd.to_datetime(df["Date"].str.strip(), format="%d-%b-%Y", errors="coerce").dt.strftime("%Y-%m-%d"),
         "kind": kind,
         "symbol": df["Symbol"].str.strip(),
         "name": df["Security Name"].str.strip(),
@@ -216,7 +216,7 @@ def parse_deals(raw: bytes, kind: str) -> pd.DataFrame:
         "price": pd.to_numeric(df[[c for c in df.columns if c.startswith("Trade Price")][0]].str.replace(",", ""),
                                errors="coerce"),
     })
-    return out.dropna(subset=["qty", "price"])
+    return out.dropna(subset=["date", "qty", "price"])      # drops NSE's 'NO RECORDS' placeholder row
 
 
 def update_deals() -> int:
