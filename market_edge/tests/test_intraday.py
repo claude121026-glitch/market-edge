@@ -188,3 +188,20 @@ def test_settle_ambiguous_with_one_minute_bars(tmp_path, monkeypatch):
     row = paper.load("live").iloc[0]
     assert row["outcome_exact"] == "win" and row["ambiguous"] == 0 and row["exact_source"] == "yahoo1m"
     assert I.settle_ambiguous(fetch_fn=lambda sym, day: one)["checked"] == 0           # settled once, not again
+
+
+def test_stop_touch_at_the_open_of_the_entry_bar_is_not_a_stop_out():
+    # STYLEBAAZA 12 Nov, 1-minute bars: opened at the low (below the stop), rallied through the entry,
+    # then hit the target two minutes later.
+    one = bars((433.85, 435.5, 433.15, 435.0), (436.0, 436.0, 427.15, 428.25), (430.0, 439.25, 430.0, 438.15),
+               (439.9, 440.95, 436.45, 437.3), (437.75, 446.05, 436.0, 446.05), (445.15, 450.3, 444.65, 450.3),
+               start=dtime(9, 16), step=1)
+    f = I.simulate_path("bullish", 436.9, 430.97, 448.77, one)
+    assert (f.outcome, f.ambiguous, f.exit) == ("win", False, 448.77)
+    # SHYAMMETL 11 Nov short: opened at the high (above the stop), fell straight through the entry.
+    short = bars((1324.3, 1324.3, 1295.2, 1295.2), (1298.6, 1310.0, 1298.6, 1309.6), start=dtime(9, 15), step=1)
+    g = I.simulate_path("bearish", 1297.6, 1317.67, 1257.47, short)
+    assert g.outcome == "close" and not g.ambiguous and g.entry == 1297.6
+    # A genuine entry-bar stop-out (stop side reached after the open) is still a loss.
+    bad = bars((99.0, 100.5, 97.5, 98.0), start=dtime(9, 15))
+    assert I.simulate_path("bullish", 100, 98, 104, bad).outcome == "loss"

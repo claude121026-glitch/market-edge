@@ -144,7 +144,7 @@ def settle_ambiguous(source: str = "live", days: int = 7, fetch_fn=None) -> dict
     since = (datetime.now(IST).date() - timedelta(days=days)).isoformat()
     rows = [dict(r) for r in con.execute(
         "SELECT * FROM paper_trades WHERE source=? AND ambiguous=1 AND outcome_exact IS NOT NULL "
-        "AND COALESCE(exact_source,'') != 'yahoo1m' AND trade_date>=?", (source, since))]
+        "AND trade_date>=?", (source, since))]
     con.row_factory = None
     out = {"checked": len(rows), "settled": 0, "still_ambiguous": 0, "failed": 0, "changes": []}
     for t in rows:
@@ -227,6 +227,13 @@ def simulate_path(direction: str, trigger: float, stop: float, target: float, ba
                 # ambiguous (could have come before the breakout): score it pessimistically.
                 stop_hit = b.low <= stop if bull else b.high >= stop
                 tgt_hit = b.high >= target if bull else b.low <= target
+                # If the stop-side extreme IS the bar's open and the bar closed beyond the entry, that touch
+                # happened before we were in the trade (e.g. opened below the stop, then rallied through
+                # the entry): not a stop-out.
+                before_entry = (b.low == b.open) if bull else (b.high == b.open)
+                closed_through = (b.close >= entry) if bull else (b.close <= entry)
+                if stop_hit and before_entry and closed_through:
+                    stop_hit = False
                 if stop_hit:
                     return PathFill("loss", entry, stop, entry_ts, b.ts, ambiguous=True)
                 if tgt_hit:
