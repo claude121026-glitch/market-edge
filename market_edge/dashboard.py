@@ -264,13 +264,15 @@ with tabs[1]:
             e = p.get("history") or {}
             rows.append({"#": i, "Side": "🟢 LONG" if p["direction"] == "bullish" else "🔴 SHORT", "Stock": p["symbol"],
                          "Setup": p["setup"], "Trigger": p["trigger"], "Stop": p["stop"], "Target": p["target"],
-                         "Risk %": p["risk_pct"], "Last": last, "Live": live,
+                         "Risk %": p["risk_pct"], "Qty": p.get("qty"), "Capital ₹": p.get("capital"),
+                         "Last": last, "Live": live,
                          "Hist %": e.get("intraday_pct"), "Why": ", ".join(p["reasons"])})
         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
                      column_config={"Trigger": st.column_config.NumberColumn(format="%.2f"),
                                     "Stop": st.column_config.NumberColumn(format="%.2f"),
                                     "Target": st.column_config.NumberColumn(format="%.2f"),
                                     "Risk %": st.column_config.NumberColumn(format="%.1f"),
+                                    "Capital ₹": st.column_config.NumberColumn(format="localized"),
                                     "Hist %": st.column_config.NumberColumn(
                                         format="%+.2f", help="Setup's average next-day move in the predicted direction (backtest)")})
 

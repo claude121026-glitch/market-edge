@@ -37,6 +37,8 @@ jobs:
       WHATSAPP_APIKEY: ${{ secrets.WHATSAPP_APIKEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      ME_RISK_PER_TRADE: ${{ vars.ME_RISK_PER_TRADE }}     # optional repo variable, default 1000
+      ME_MAX_POSITION: ${{ vars.ME_MAX_POSITION }}         # optional repo variable, default 200000
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
     steps:
       - uses: actions/checkout@v4

@@ -66,6 +66,25 @@ def _cards(make):
         return None
 
 
+def _send_chart_analysis(top: list[dict], scan_date: str) -> None:
+    """Morning: one chart per watchlist trade with the analysis behind it (a Telegram album)."""
+    contexts = {}
+    for p in top:
+        try:
+            ctx = watchlist.chart_context(p["symbol"], scan_date)
+            if not ctx["bars"].empty:
+                contexts[p["symbol"]] = ctx
+        except Exception as ex:
+            logging.warning("chart data for %s failed: %s", p["symbol"], ex)
+    picks = [(i, p) for i, p in enumerate(top, 1) if p["symbol"] in contexts]
+    if not picks:
+        return
+    text = watchlist.format_analysis(top, contexts)
+    images = _cards(lambda c: [c.trade_chart(p, contexts[p["symbol"]], i, scan_date,
+                                             watchlist.analysis_lines(p, contexts[p["symbol"]])) for i, p in picks])
+    notify.send(text, images=images, album=True)
+
+
 def _latest_date() -> str | None:
     con = nse.connect()
     d = con.execute("SELECT MAX(date) FROM daily").fetchone()[0]
@@ -139,6 +158,7 @@ def run_morning(force: bool = False) -> bool:
         top = watchlist.build(rep, mood, sectors)
         notify.send(watchlist.format_telegram(top, rep["scan_date"]),
                     images=_cards(lambda c: [c.watchlist_card(top, rep["scan_date"])]))
+        _send_chart_analysis(top, rep["scan_date"])
     _mark("morning", today)
     return True
 

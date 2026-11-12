@@ -114,15 +114,41 @@ def _get_whatsapp(text: str) -> bool:
     return ok
 
 
-def _multipart(fields: dict, file_field: str, filename: str, data: bytes, mime: str = "image/png") -> tuple[bytes, str]:
+def _multipart_many(fields: dict, files: list[tuple[str, str, bytes]], mime: str = "image/png") -> tuple[bytes, str]:
     boundary = uuid.uuid4().hex
     parts = []
     for k, v in fields.items():
         parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
-    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
-                 f"Content-Type: {mime}\r\n\r\n".encode() + data + b"\r\n")
+    for field, filename, data in files:
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'
+                     f"Content-Type: {mime}\r\n\r\n".encode() + data + b"\r\n")
     parts.append(f"--{boundary}--\r\n".encode())
     return b"".join(parts), f"multipart/form-data; boundary={boundary}"
+
+
+def _multipart(fields: dict, file_field: str, filename: str, data: bytes, mime: str = "image/png") -> tuple[bytes, str]:
+    return _multipart_many(fields, [(file_field, filename, data)], mime)
+
+
+def _tg_album(pngs: list[bytes], caption: str | None = None) -> tuple[bool, str]:
+    """Up to 10 photos as one Telegram album (sendMediaGroup)."""
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMediaGroup"
+    media = [{"type": "photo", "media": f"attach://p{i}"} for i in range(len(pngs))]
+    if caption:
+        media[0]["caption"] = caption[:1000]
+    body, ctype = _multipart_many({"chat_id": config.TELEGRAM_CHAT_ID, "media": json.dumps(media)},
+                                  [(f"p{i}", f"chart{i}.png", png) for i, png in enumerate(pngs)])
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=body, headers={"Content-Type": ctype}),
+                                    timeout=180) as r:
+            return bool(json.loads(r.read()).get("ok", False)), ""
+    except urllib.error.HTTPError as e:
+        try:
+            return False, json.loads(e.read()).get("description", f"HTTP {e.code}")
+        except Exception:
+            return False, f"HTTP {e.code}"
+    except Exception as e:
+        return False, type(e).__name__
 
 
 def _tg_photo(png: bytes, caption: str | None = None) -> tuple[bool, str]:
@@ -149,7 +175,29 @@ def _caption(text: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", first)).strip()
 
 
-def send(text: str, images: list[bytes] | None = None) -> bool:
+def _send_images(images: list[bytes], caption: str, album: bool) -> bool:
+    if album and len(images) > 1:
+        ok = True
+        for k in range(0, len(images), 10):
+            group = images[k:k + 10]
+            sent, why = _tg_album(group, caption if k == 0 else None) if len(group) > 1 else _tg_photo(group[0])
+            if not sent:
+                log.warning("Telegram album failed (%s); sending the images one by one", why)
+                return _send_images(images[k:], caption if k == 0 else "", album=False)
+            if k + 10 < len(images):
+                time.sleep(1.5)
+        return ok
+    for i, png in enumerate(images):
+        ok, why = _tg_photo(png, caption if i == 0 else None)
+        if not ok:
+            log.error("Telegram image %d/%d failed (%s); sending the text version instead", i + 1, len(images), why)
+            return False
+        if i + 1 < len(images):
+            time.sleep(0.7)               # keep the cards in order and under Telegram's rate limit
+    return True
+
+
+def send(text: str, images: list[bytes] | None = None, album: bool = False) -> bool:
     """Send to every configured channel. Never raises: a failed alert must not stop a job.
 
     WhatsApp (CallMeBot) is text-only. Telegram gets the image cards when given, and falls back to the
@@ -160,17 +208,7 @@ def send(text: str, images: list[bytes] | None = None) -> bool:
     if wa:
         sent |= _get_whatsapp(text)
     if tg:
-        done = False
-        if images:
-            done = True
-            for i, png in enumerate(images):
-                ok, why = _tg_photo(png, _caption(text) if i == 0 else None)
-                if not ok:
-                    log.error("Telegram image %d/%d failed (%s); sending the text version instead", i + 1, len(images), why)
-                    done = False
-                    break
-                if i + 1 < len(images):
-                    time.sleep(0.7)               # keep the cards in order and under Telegram's rate limit
+        done = bool(images) and _send_images(images, _caption(text), album)
         sent |= done or _post_telegram(text)
     if not wa and not tg:
         print(text)

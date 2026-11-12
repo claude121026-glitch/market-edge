@@ -12,6 +12,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.ticker  # noqa: E402,F401
 from matplotlib.patches import FancyBboxPatch, Polygon, Rectangle  # noqa: E402
 
 W, PAD, DPI = 1080, 36, 118
@@ -325,9 +326,14 @@ def verdict(e: dict | None) -> tuple[str, str]:
     return f"no clear edge {e['intraday_pct']:+.2f}%", C["muted"]
 
 
+def _lakh(v: float) -> str:
+    v = float(v)
+    return f"₹{v / 1e7:.2f} cr" if abs(v) >= 1e7 else f"₹{v / 1e5:.2f} lakh" if abs(v) >= 1e5 else f"₹{v:,.0f}"
+
+
 def watchlist_card(top: list[dict], scan_date: str) -> bytes:
-    row_h = 124
-    c = Canvas(134 + max(1, len(top)) * (row_h + 12) + 130)
+    row_h = 156
+    c = Canvas(134 + max(1, len(top)) * (row_h + 12) + 170)
     y = _header(c, "TODAY'S WATCHLIST", f"from {scan_date} close", "Intraday plan: enter on the break, stop at the pivot, target 2R")
     for i, p in enumerate(top, 1):
         long_ = p["direction"] == "bullish"
@@ -339,18 +345,26 @@ def watchlist_card(top: list[dict], scan_date: str) -> bytes:
         sx = PAD + 170 + c.width(p["symbol"], 31, True) + 16
         c.text(sx, y + 16, c.fit(p["setup"], 21, W - PAD - 24 - sx, False), 21, C["muted"])
         side = "above" if long_ else "below"
-        plan = f"Enter {side} {p['trigger']:,.2f}   ·   Stop {p['stop']:,.2f}   ·   Target {p['target']:,.2f}   ·   Risk {p['risk_pct']:.1f}%"
+        plan = f"Enter {side} {p['trigger']:,.2f}   ·   Stop {p['stop']:,.2f}   ·   Target {p['target']:,.2f}"
         c.text(PAD + 22, y + 56, c.fit(plan, 22, W - 2 * PAD - 44), 22)
+        if "qty" in p:
+            money = (f"Qty {p['qty']:,}   ·   Capital {_lakh(p['capital'])}   ·   "
+                     f"At risk {_lakh(p['risk_rs'])} ({p['risk_pct']:.1f}%)")
+            c.text(PAD + 22, y + 88, c.fit(money, 22, W - 2 * PAD - 44), 22, C["accent"], bold=True)
         v, vcol = verdict(p.get("history"))
-        c.text(PAD + 22, y + 90, f"History: {v}", 20, vcol, bold=True)
+        c.text(PAD + 22, y + 122, f"History: {v}", 20, vcol, bold=True)
         extra = ", ".join(p.get("reasons") or [])
         if p.get("wide_stop"):
             extra = ("wide stop, " + extra).strip(", ")
         if extra:
-            c.text(W - PAD - 22, y + 92, c.fit(extra, 19, 600), 19, C["amber"] if p.get("wide_stop") else C["muted"], ha="right")
+            c.text(W - PAD - 22, y + 124, c.fit(extra, 19, 600), 19, C["amber"] if p.get("wide_stop") else C["muted"], ha="right")
         y += row_h + 12
     if not top:
         c.text(PAD, y, "No watchlist yet: it appears after the evening scan.", 24, C["muted"])
+    elif "capital" in top[0]:
+        total = sum(p["capital"] for p in top)
+        c.text(PAD, y + 4, f"Capital if all {len(top)} trigger: {_lakh(total)}", 25, bold=True)
+        y += 40
     c.text(PAD, y + 8, "Paper-trade only. The 1-year backtest found no proven edge after costs.", 20, C["amber"])
     _footer(c, c.h - 40)
     return c.png()
@@ -466,3 +480,125 @@ def corporate_card(flows: dict | None, anns: list[dict], results: list[str], dea
         c.text(PAD, y, "No large deals published for this session.", 24, C["muted"])
     _footer(c, c.h - 40)
     return c.png()
+
+
+# --------------------------------------------------------------------------- #
+# 5. Chart analysis for one watchlist trade
+# --------------------------------------------------------------------------- #
+def trade_chart(p: dict, ctx: dict, rank: int, scan_date: str, lines: list[str], window: int = 60) -> bytes:
+    """Candles for the last `window` sessions with the levels the scan used, volume underneath,
+    and the written analysis below. One y-axis per panel."""
+    import textwrap
+    from matplotlib.transforms import blended_transform_factory
+
+    bars = ctx["bars"].tail(window).reset_index(drop=True)
+    n = len(bars)
+    long_ = p["direction"] == "bullish"
+    side_col = C["up"] if long_ else C["down"]
+    wrapped = [textwrap.wrap(l, 92) or [""] for l in lines]
+    n_text = sum(len(w) for w in wrapped)
+
+    W_in, left_in, right_in = 10.8, 0.75, 1.75
+    head_in, price_in, gap_in, vol_in, axis_in = 1.15, 4.6, 0.12, 1.25, 0.5
+    text_in = 0.45 + n_text * 0.33 + len(wrapped) * 0.06
+    H_in = head_in + price_in + gap_in + vol_in + axis_in + text_in + 0.45
+    fig = plt.figure(figsize=(W_in, H_in), dpi=DPI, facecolor=C["bg"])
+    fx = lambda inch: inch / W_in  # noqa: E731
+    fy = lambda inch: inch / H_in  # noqa: E731
+    ax_w = fx(W_in - left_in - right_in)
+    vol_bottom = H_in - head_in - price_in - gap_in - vol_in
+    ax = fig.add_axes([fx(left_in), fy(vol_bottom + vol_in + gap_in), ax_w, fy(price_in)])
+    av = fig.add_axes([fx(left_in), fy(vol_bottom), ax_w, fy(vol_in)], sharex=ax)
+
+    # header
+    fig.text(fx(0.35), 1 - fy(0.30), f"{rank}. {p['symbol']}", fontsize=25, fontweight="bold", color=C["text"], va="top")
+    fig.text(fx(0.35), 1 - fy(0.82), f"{p['setup']}   ·   signal day {scan_date}   ·   last {n} sessions",
+             fontsize=12.5, color=C["muted"], va="top")
+    fig.text(1 - fx(0.35), 1 - fy(0.36), "LONG" if long_ else "SHORT", fontsize=16, fontweight="bold", color="#0e1621",
+             ha="right", va="top", bbox=dict(boxstyle="round,pad=0.35,rounding_size=0.8", fc=side_col, ec="none"))
+
+    # candles
+    for i, r in bars.iterrows():
+        up = r["close"] >= r["open"]
+        col = C["up"] if up else C["down"]
+        ax.vlines(i, r["low"], r["high"], color=col, lw=1.1, zorder=2)
+        body = max(abs(r["close"] - r["open"]), (r["high"] - r["low"]) * 0.02 or 0.01)
+        ax.add_patch(Rectangle((i - 0.32, min(r["open"], r["close"])), 0.64, body, fc=col, ec=col, lw=0.6, zorder=3))
+    ax.axvspan(n - 1.5, n - 0.5, color=C["accent"], alpha=0.13, lw=0, zorder=1)
+    ax.text(n - 1, 1.0, "signal day", transform=blended_transform_factory(ax.transData, ax.transAxes),
+            ha="right", va="bottom", fontsize=10.5, color=C["accent"])
+
+    # levels: always the trade plan; context levels only when they are in view
+    plan = [("Entry", p["trigger"], C["text"], "--", 1.4), ("Stop", p["stop"], C["down"], "-", 1.6),
+            ("Target", p["target"], C["up"], "-", 1.6)]
+    lo = min(bars["low"].min(), p["stop"], p["target"], p["trigger"])
+    hi = max(bars["high"].max(), p["stop"], p["target"], p["trigger"])
+    pad = (hi - lo) * 0.06 or hi * 0.01
+    ax.set_ylim(lo - pad, hi + pad)
+    context = []
+    for label, key, col in (("20D high", "hh20", C["grey"]), ("20D low", "ll20", C["grey"]),
+                            ("52W high", "hh52", C["amber"]), ("52W low", "ll52", C["amber"])):
+        v = ctx.get(key)
+        if v and lo - pad < v < hi + pad:
+            context.append((label, v, col, ":", 1.3))
+    levels = plan + context
+    for label, v, col, ls, lw in levels:
+        ax.axhline(v, color=col, ls=ls, lw=lw, alpha=0.95 if label in ("Entry", "Stop", "Target") else 0.8, zorder=4)
+    # right-hand labels, nudged apart so they never overlap
+    gap = (hi - lo + 2 * pad) * 0.055
+    placed = []
+    for label, v, col, _, _ in sorted(levels, key=lambda t: t[1]):
+        y = v if not placed or v - placed[-1] >= gap else placed[-1] + gap
+        placed.append(y)
+        ax.text(1.012, y, f"{label} {v:,.2f}", transform=blended_transform_factory(ax.transAxes, ax.transData),
+                fontsize=10.5, color=col if label not in ("Entry",) else C["text"], va="center", ha="left",
+                fontweight="bold" if label in ("Entry", "Stop", "Target") else "normal", clip_on=False)
+
+    # volume
+    vols = bars["volume"].fillna(0)
+    vcols = [C["up"] if c >= o else C["down"] for o, c in zip(bars["open"], bars["close"])]
+    av.bar(range(n), vols, width=0.64, color=vcols, alpha=0.85, zorder=2)
+    if ctx.get("avg_vol20"):
+        av.axhline(ctx["avg_vol20"], color=C["muted"], ls="--", lw=1.1, zorder=3)
+        av.text(1.012, ctx["avg_vol20"], "20D avg", transform=blended_transform_factory(av.transAxes, av.transData),
+                fontsize=10, color=C["muted"], va="center", clip_on=False)
+        ratio = vols.iloc[-1] / ctx["avg_vol20"] if ctx["avg_vol20"] else 0
+        av.text(n - 1, vols.iloc[-1], f"{ratio:.1f}×", ha="right", va="bottom", fontsize=11, color=C["text"], fontweight="bold")
+    av.set_ylim(0, max(vols.max() * 1.18, 1))
+
+    # axes styling
+    for a in (ax, av):
+        a.set_facecolor(C["bg"])
+        for sp in a.spines.values():
+            sp.set_visible(False)
+        a.tick_params(colors=C["muted"], labelsize=10.5, length=0)
+        a.grid(axis="y", color=C["line"], lw=0.8, alpha=0.7, zorder=0)
+        a.set_xlim(-0.8, n - 0.2)
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:,.0f}" if v >= 100 else f"{v:,.2f}"))
+    av.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(
+        lambda v, _: f"{v / 1e6:.1f}M" if v >= 1e6 else f"{v / 1e3:.0f}K" if v >= 1e3 else f"{v:.0f}"))
+    av.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(3))
+    plt.setp(ax.get_xticklabels(), visible=False)
+    step = max(1, n // 6)
+    ticks = list(range(0, n, step))
+    av.set_xticks(ticks)
+    av.set_xticklabels([str(bars.loc[i, "date"])[5:].replace("-", "/") for i in ticks])
+
+    # analysis text
+    y = vol_bottom - axis_in - 0.1
+    fig.text(fx(0.35), fy(y), "ANALYSIS", fontsize=12, fontweight="bold", color=C["muted"], va="top")
+    y -= 0.42
+    for i, chunk in enumerate(wrapped):
+        is_money = chunk[0].startswith("Qty ")
+        col = C["accent"] if is_money else C["text"]
+        fig.text(fx(0.42), fy(y), "•", fontsize=13.5, color=C["muted"], va="top")
+        for j, l in enumerate(chunk):
+            fig.text(fx(0.62), fy(y), l, fontsize=13.5, color=col, va="top", fontweight="bold" if is_money else "normal")
+            y -= 0.33
+        y -= 0.06
+    fig.text(fx(0.35), fy(0.32), "Daily candles from NSE · screening output, not investment advice · paper-trade first",
+             fontsize=10.5, color=C["grey"], va="top")
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=DPI, facecolor=C["bg"])
+    plt.close(fig)
+    return buf.getvalue()

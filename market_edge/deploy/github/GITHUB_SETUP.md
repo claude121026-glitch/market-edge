@@ -42,6 +42,13 @@ and creates the `data` release. A green tick means it worked. If it's red, open 
 4. **Deploy**. Your dashboard: `https://my-market-edge.streamlit.app`.
 5. Optional: in the app's **Settings → Sharing**, limit viewers to your own email.
 
+## Optional: trade size
+Every watchlist trade shows its quantity, **capital used** (quantity × entry price) and money at risk.
+Defaults: ₹1,000 risk per trade, at most ₹2,00,000 capital per trade. To change them:
+repo **Settings → Secrets and variables → Actions → Variables tab → New repository variable**
+- `ME_RISK_PER_TRADE`, e.g. `500`
+- `ME_MAX_POSITION`, e.g. `100000`
+
 ## What runs when (IST)
 
 | Time | Job |

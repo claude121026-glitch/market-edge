@@ -302,8 +302,10 @@ def run_live(poll: int = 60, until: dtime = dtime(15, 35), now_fn=lambda: dateti
             if s["phase"] == "waiting" and f.entry is not None:
                 s["phase"], s["entry"] = "open", f.entry
                 if fresh(f.entry_ts):
+                    sz = paper.plan_size(f.entry, t["stop"])
                     notify.send(f"⚡ <b>{t['symbol']}</b> {'LONG' if bull else 'SHORT'} triggered @ {f.entry:,.2f}\n"
-                                f"SL {t['stop']:,.2f} · Tgt {t['target']:,.2f} · now {px:,.2f}")
+                                f"SL {t['stop']:,.2f} · Tgt {t['target']:,.2f} · now {px:,.2f}\n"
+                                f"Qty {sz['qty']:,} · capital {paper.lakh(sz['capital'])} · at risk {paper.lakh(sz['risk_rs'])}")
             elif s["phase"] == "waiting" and f.outcome == "no_entry" and bars[0].ts.time() <= dtime(9, 20) and \
                     ((bull and bars[0].open >= t["target"]) or (not bull and bars[0].open <= t["target"])):
                 s["phase"] = "no_entry"
@@ -323,7 +325,7 @@ def run_live(poll: int = 60, until: dtime = dtime(15, 35), now_fn=lambda: dateti
     if now_fn().time() < SQUARE_OFF:     # a morning-only session: the afternoon session sends the summary
         return {"tracked": len(state), "partial": True}
     # End of day: final path and exact scoring for every pick.
-    lines, total = ["<b>📒 Day summary (exact, from intraday path)</b>"], 0.0
+    lines, total, capital = ["<b>📒 Day summary (exact, from intraday path)</b>"], 0.0, 0.0
     for s in state.values():
         t = s["t"]
         bars = load_bars(con, t["symbol"], today.isoformat())
@@ -339,8 +341,12 @@ def run_live(poll: int = 60, until: dtime = dtime(15, 35), now_fn=lambda: dateti
         row = con.execute("SELECT net_exact, r_exact FROM paper_trades WHERE source=? AND signal_date=? AND symbol=? "
                           "AND direction=?", (t["source"], t["signal_date"], t["symbol"], t["direction"])).fetchone()
         total += row[0]
-        lines.append(f"• {t['symbol']}: {f.outcome} · ₹{row[0]:+,.0f} ({row[1]:+.2f}R)")
+        cap = (t.get("qty") or paper.size(f.entry, t["stop"])) * f.entry
+        capital += cap
+        lines.append(f"• {t['symbol']}: {f.outcome} · ₹{row[0]:+,.0f} ({row[1]:+.2f}R) · capital {paper.lakh(cap)}")
     lines.append(f"<b>Total: ₹{total:+,.0f}</b> (paper, after costs)")
+    if capital:
+        lines.append(f"<b>Capital used: {paper.lakh(capital)}</b> · return {total / capital * 100:+.2f}% on capital")
     notify.send("\n".join(lines))
     return {"tracked": len(state), "total": round(total, 2)}
 

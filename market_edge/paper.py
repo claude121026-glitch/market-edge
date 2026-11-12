@@ -106,6 +106,22 @@ def size(entry: float, stop: float) -> int:
     return int(max(0, math.floor(min(config.RISK_PER_TRADE / risk_per_share, config.MAX_POSITION_VALUE / entry))))
 
 
+def plan_size(entry: float, stop: float) -> dict:
+    """Quantity, capital used (position value) and money at risk for a trade entered at `entry`."""
+    qty = size(entry, stop)
+    return {"qty": qty, "capital": round(qty * entry, 2), "risk_rs": round(qty * abs(entry - stop), 2)}
+
+
+def lakh(v: float) -> str:
+    """Indian-style money: Rs 48,150 / Rs 4.21 lakh / Rs 1.2 cr."""
+    v = float(v)
+    if abs(v) >= 1e7:
+        return f"₹{v / 1e7:.2f} cr"
+    if abs(v) >= 1e5:
+        return f"₹{v / 1e5:.2f} lakh"
+    return f"₹{v:,.0f}"
+
+
 def evaluate_row(r: dict, bar: dict) -> dict:
     out = {"trade_date": bar["date"]}
     fp = simulate(r["direction"], r["trigger"], r["stop"], r["target"], bar["open"], bar["high"], bar["low"], bar["close"], "pess")
@@ -241,6 +257,9 @@ def stats(df: pd.DataFrame) -> dict:
             "max_drawdown_rs": round((daily.cummax() - daily).max(), 0),
         }
     out["costs_per_trade_rs"] = round(ev["costs"].mean(), 0)
+    cap = ev["entry"] * ev["qty"]
+    out["capital_per_trade_rs"] = round(cap.mean(), 0)
+    out["max_daily_capital_rs"] = round(cap.groupby(ev["trade_date"]).sum().max(), 0)
     return out
 
 
@@ -262,7 +281,9 @@ def format_stats(title: str, s: dict) -> str:
             f"Win rate {p['win_rate_pct']}–{o['win_rate_pct']}% · avg {p['avg_R']:+.2f}R to {o['avg_R']:+.2f}R\n"
             f"Per trade ₹{p['expectancy_rs']:+,.0f} to ₹{o['expectancy_rs']:+,.0f} · "
             f"total ₹{p['total_rs']:+,.0f} to ₹{o['total_rs']:+,.0f}\n"
-            f"Max drawdown ₹{p['max_drawdown_rs']:,.0f} (pessimistic)")
+            f"Max drawdown ₹{p['max_drawdown_rs']:,.0f} (pessimistic)\n"
+            f"Capital used: {lakh(s['capital_per_trade_rs'])} per trade on average · "
+            f"busiest day {lakh(s['max_daily_capital_rs'])}")
 
 
 # --------------------------------------------------------------------------- #
