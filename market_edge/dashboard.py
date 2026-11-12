@@ -398,7 +398,7 @@ with tabs[5]:
                "intraday path (live tracker or `resolve`). Costs and slippage are deducted.")
     has_live = q("SELECT COUNT(*) AS n FROM paper_trades WHERE source='live' AND status='evaluated'")["n"].iloc[0] > 0
     src = st.radio("Trades", ["live", "backtest", "baseline"], horizontal=True, index=0 if has_live else 1,
-                   format_func={"live": "Live paper log", "backtest": "Backtest (1 yr)",
+                   format_func={"live": "Our trades (watchlist)", "backtest": "Backtest (1 yr)",
                                 "baseline": "Random-stock baseline"}.get)
     df = paper.load(src)
     s = paper.stats(df)

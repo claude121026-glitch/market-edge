@@ -109,3 +109,87 @@ def test_live_alert_and_summary_show_capital(tmp_path, monkeypatch):
     text = "\n".join(sent)
     assert "Qty 500 · capital ₹50,000 · at risk ₹1,000" in text
     assert "Capital used: ₹50,000" in text and "return" in text
+
+
+def _report(day, n):
+    row = dict(setup="Accumulation", signals=[], catalysts=[], wide_stop=False, trigger=100.0, stop=98.0, target=104.0)
+    return {"scan_date": day, "bearish": [], "bullish": [{**row, "symbol": f"S{i}", "score": float(n - i)} for i in range(n)]}
+
+
+def test_only_the_top10_watchlist_counts_as_our_trades(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.db")
+    con = nse.connect()
+    for d in ("2026-11-05", "2026-11-06", "2026-11-09"):
+        con.executemany("INSERT INTO daily (symbol, series, date, open, high, low, close) VALUES (?, 'EQ', ?, 99, 105, 99.5, 103)",
+                        [(f"S{i}", d) for i in range(25)])
+    con.commit()
+    paper.record_from_report(_report("2026-11-05", 25))                      # traded on 11-06
+    c = paper.connect()
+    c.executemany("UPDATE paper_trades SET morning_rank=? WHERE signal_date='2026-11-05' AND symbol=?",
+                  [(i + 1, f"S{i * 2}") for i in range(10)])                 # the morning picked 10 of them
+    c.commit(); c.close()
+    paper.record_from_report(_report("2026-11-09", 25))                      # not traded yet
+    res = paper.finalize_our_trades()
+    assert res == {"days": 1, "moved": 15}
+    live = paper.load("live")
+    assert set(live[live.signal_date == "2026-11-05"].symbol) == {f"S{i * 2}" for i in range(10)}
+    assert len(live[live.signal_date == "2026-11-09"]) == 25                 # untouched until it is traded
+    assert len(paper.load("scan_only")) == 15
+    assert paper.evaluate_pending() == 10                                    # only our trades are scored
+    s = paper.stats(paper.load("live"))
+    assert s["signals"] == 35 and s["entered"] == 10                          # 10 traded + 25 still pending
+    assert paper.finalize_our_trades()["moved"] == 0                          # idempotent
+
+
+def test_unranked_day_falls_back_to_top_scores(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.db")
+    con = nse.connect()
+    con.executemany("INSERT INTO daily (symbol, series, date, close) VALUES (?, 'EQ', '2026-11-06', 1)", [(f"S{i}", ) for i in range(25)])
+    con.commit()
+    paper.record_from_report(_report("2026-11-05", 25))
+    paper.finalize_our_trades()
+    assert set(paper.load("live").symbol) == {f"S{i}" for i in range(config.WATCHLIST_SIZE)}   # highest scores
+
+
+def test_traded_watchlist_is_never_re_ranked(tmp_path, monkeypatch):
+    from datetime import datetime as real_dt
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.db")
+    nse.connect().close()
+    rep = _report("2026-11-11", 12)
+    rep["bullish"] = [{**r, "risk_pct": 2.0, "industry": None} for r in rep["bullish"]]
+    paper.record_from_report(rep)
+    c = paper.connect()
+    c.execute("UPDATE paper_trades SET morning_rank=1 WHERE symbol='S11'")      # what the morning ranked
+    c.commit(); c.close()
+
+    class Evening(real_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return real_dt(2026, 11, 12, 19, 22, tzinfo=tz)
+    import datetime as dtmod
+    monkeypatch.setattr(dtmod, "datetime", Evening)
+    watchlist.build(rep, {"label": "Neutral"}, [], record=True)
+    ranks = paper.load("live").set_index("symbol")["morning_rank"].dropna()
+    assert list(ranks.index) == ["S11"]                                       # unchanged after the trade day
+
+
+def test_re_rank_before_trading_replaces_the_old_ranking(tmp_path, monkeypatch):
+    from datetime import datetime as real_dt
+    import datetime as dtmod
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.db")
+    nse.connect().close()
+    rep = _report("2026-11-09", 12)
+    rep["bullish"] = [{**r, "risk_pct": 2.0, "industry": None} for r in rep["bullish"]]
+    paper.record_from_report(rep)
+
+    class HolidayMorning(real_dt):          # 10 Nov (holiday) ranked first, 11 Nov re-ranked before the open
+        @classmethod
+        def now(cls, tz=None):
+            return real_dt(2026, 11, 11, 7, 55, tzinfo=tz)
+    monkeypatch.setattr(dtmod, "datetime", HolidayMorning)
+    c = paper.connect()
+    c.execute("UPDATE paper_trades SET morning_rank=1 WHERE symbol IN ('S10','S11')")   # an earlier ranking
+    c.commit(); c.close()
+    watchlist.build(rep, {"label": "Neutral"}, [], record=True)
+    ranked = paper.load("live")["morning_rank"].notna().sum()
+    assert ranked == config.WATCHLIST_SIZE                                    # exactly 10, old ranks cleared

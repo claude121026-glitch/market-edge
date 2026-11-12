@@ -59,6 +59,17 @@ def build(rep: dict, mood: dict | None = None, sector_tilt: list[tuple[str, floa
     if not record:          # display only (dashboard): don't touch the paper log
         return top
     con = paper.connect()
+    # Never re-rank a watchlist that has already been traded (e.g. a late manual re-run).
+    from datetime import datetime, time as dtime
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    already = con.execute("SELECT COUNT(*) FROM paper_trades WHERE source='live' AND signal_date=? AND morning_rank IS NOT NULL",
+                          (rep["scan_date"],)).fetchone()[0]
+    if already and now.date().isoformat() > rep["scan_date"] and now.time() >= dtime(9, 10):
+        con.close()
+        return top
+    # A re-rank replaces the earlier ranking (otherwise a second run would leave 11-12 ranked trades).
+    con.execute("UPDATE paper_trades SET morning_rank=NULL WHERE source='live' AND signal_date=?", (rep["scan_date"],))
     for i, p in enumerate(top, 1):
         con.execute("UPDATE paper_trades SET morning_rank=?, macro_label=? WHERE source='live' AND signal_date=? "
                     "AND symbol=? AND direction=?", (i, label, rep["scan_date"], p["symbol"], p["direction"]))

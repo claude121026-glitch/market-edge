@@ -105,6 +105,7 @@ def run_evening(date_arg: str | None = None, no_update: bool = False, force: boo
     corp = corporate.run(date.fromisoformat(day))
     evening_scan.attach_catalysts(rep, corporate.catalysts_by_symbol(day))
     (config.REPORT_DIR / f"evening_{day}.json").write_text(json.dumps(rep, indent=2, default=str))
+    paper.finalize_our_trades()                    # only the morning top-10 count as our trades
     evaluated = paper.evaluate_pending()           # yesterday's picks vs today's prices
     recorded = paper.record_from_report(rep)       # today's picks become tomorrow's paper trades
     try:
@@ -259,17 +260,14 @@ def main():
             print(f"  {k:18} {v['intraday_pct']:+.2f}%  hit {v['hit_pct']}%  5d {v['five_day_pct']:+.2f}%  "
                   f"{v['quarters_positive']}/{v['quarters']} qtrs  n={v['n']}")
     elif a.cmd == "paper":
+        paper.finalize_our_trades()
         paper.evaluate_pending()
-        live = paper.load("live")
-        notify.send(paper.format_stats("Live paper log (all picks)", paper.stats(live)))
-        top = live[live["morning_rank"].notna()]
-        if len(top):
-            notify.send(paper.format_stats("Live paper log (morning top 10)", paper.stats(top)))
+        notify.send(paper.format_stats("Our trades (morning top-10 watchlist)", paper.stats(paper.load("live"))))
         notify.send(paper.format_stats("Backtest reference", paper.stats(paper.load("backtest"))))
         for src in ("live", "backtest"):
             ex = intraday.exact_stats(src)
             if ex:
-                notify.send(intraday.format_exact(f"Exact intraday results ({src})", ex))
+                notify.send(intraday.format_exact(f"Exact intraday results ({'our trades' if src == 'live' else src})", ex))
     elif a.cmd == "live":
         hh, mm = (int(x) for x in a.until.split(":"))
         print(intraday.run_live(poll=a.poll, until=dtime(hh, mm)))
