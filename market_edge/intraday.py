@@ -119,6 +119,55 @@ def fetch_yahoo(symbol: str, day: date, interval: str = "5m") -> list[Bar]:
     raise last_err
 
 
+def fetch_yahoo_1m(symbol: str, day: date) -> list[Bar]:
+    """1-minute bars for one trading day (Yahoo keeps them for about the last 7 days)."""
+    start = int(datetime.combine(day, dtime(9, 0), IST).timestamp())
+    end = int(datetime.combine(day, dtime(15, 45), IST).timestamp())
+    sym = urllib.parse.quote(symbol, safe="")
+    last_err = None
+    for n in (1, 2):
+        url = (f"https://query{n}.finance.yahoo.com/v8/finance/chart/{sym}.NS?interval=1m"
+               f"&period1={start}&period2={end}")
+        try:
+            return parse_yahoo(json.loads(net.get(url, timeout=20, retries=2, backoff=(5, 15))), day)
+        except net.HttpError as e:
+            last_err = e
+    raise last_err
+
+
+def settle_ambiguous(source: str = "live", days: int = 7, fetch_fn=None) -> dict:
+    """Re-score trades marked ambiguous on 5-minute bars using 1-minute bars, which almost always
+    show whether the stop or the target came first. Trades still ambiguous at 1 minute stay flagged."""
+    fetch_fn = fetch_fn or fetch_yahoo_1m
+    con = connect()
+    con.row_factory = sqlite3.Row
+    since = (datetime.now(IST).date() - timedelta(days=days)).isoformat()
+    rows = [dict(r) for r in con.execute(
+        "SELECT * FROM paper_trades WHERE source=? AND ambiguous=1 AND outcome_exact IS NOT NULL "
+        "AND COALESCE(exact_source,'') != 'yahoo1m' AND trade_date>=?", (source, since))]
+    con.row_factory = None
+    out = {"checked": len(rows), "settled": 0, "still_ambiguous": 0, "failed": 0, "changes": []}
+    for t in rows:
+        try:
+            bars = fetch_fn(t["symbol"], date.fromisoformat(t["trade_date"]))
+        except Exception as e:
+            log.warning("1-minute bars for %s %s: %s", t["symbol"], t["trade_date"], e)
+            out["failed"] += 1
+            continue
+        if len(bars) < 30:                               # a partial day can't settle anything
+            out["failed"] += 1
+            continue
+        before = (t["outcome_exact"], t["net_exact"])
+        f = score_exact(con, t, bars, "yahoo1m")
+        after = con.execute("SELECT outcome_exact, net_exact FROM paper_trades WHERE source=? AND signal_date=? "
+                            "AND symbol=? AND direction=?", (t["source"], t["signal_date"], t["symbol"], t["direction"])).fetchone()
+        out["still_ambiguous" if f.ambiguous else "settled"] += 1
+        out["changes"].append(f"{t['symbol']} {t['trade_date']}: {before[0]} ₹{before[1]:+,.0f} → {after[0]} ₹{after[1]:+,.0f}"
+                              + (" (still ambiguous at 1 min)" if f.ambiguous else ""))
+    con.close()
+    return out
+
+
 def fetch_path(symbol: str, day: date) -> tuple[list[Bar], str]:
     """Best available intraday path for symbol on day: NSE (today only) then Yahoo 5m."""
     if day == datetime.now(IST).date():

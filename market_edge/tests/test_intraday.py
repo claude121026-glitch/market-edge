@@ -162,3 +162,29 @@ def test_live_waits_for_the_morning_ranking(tmp_path, monkeypatch):
                      sleep_fn=lambda s: clock.__setitem__("t", clock["t"] + timedelta(seconds=s)),
                      fetch_fn=lambda sym, day: ([], "test"), refresh_fn=fake_pull)
     assert pulls == [1] and res.get("partial") and any("Live tracker started" in m for m in sent)
+
+
+def test_settle_ambiguous_with_one_minute_bars(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.db")
+    nse.connect().close()
+    paper.record_from_report({"scan_date": "2026-11-04", "bearish": [], "bullish": [{
+        "symbol": "ABC", "setup": "x", "signals": [], "score": 1, "catalysts": [], "wide_stop": False,
+        "trigger": 100.0, "stop": 98.0, "target": 104.0}]})
+    con = I.connect()
+    # 5-minute view: stop and target both inside one bar -> ambiguous, scored as a loss
+    five = bars((99, 100.5, 99.5, 100.2), (100.2, 104.5, 97.9, 101))
+    con.execute("UPDATE paper_trades SET status='evaluated', trade_date='2026-11-05', qty=500, entry=100 WHERE symbol='ABC'")
+    con.commit()
+    t = dict(paper.load("live").iloc[0])
+    f = I.score_exact(con, t, five, "yahoo5m")
+    assert f.ambiguous and f.outcome == "loss"
+    con.close()
+    # 1-minute view of that second bar: up to the target first, then down through the stop
+    one = bars((99, 100.5, 99.5, 100.2), *[(100.2 + i * 0.5, 100.7 + i * 0.5, 100 + i * 0.5, 100.6 + i * 0.5) for i in range(8)],
+               (104.2, 104.5, 103.9, 104.1), *[(103 - i, 103.2 - i, 97.9, 98.5) for i in range(30)], step=1)
+    monkeypatch.setattr(I, "datetime", type("D", (I.datetime,), {"now": classmethod(lambda cls, tz=None: I.datetime(2026, 11, 6, 19, 0, tzinfo=tz))}))
+    res = I.settle_ambiguous(fetch_fn=lambda sym, day: one)
+    assert res["checked"] == 1 and res["settled"] == 1 and "loss" in res["changes"][0] and "→ win" in res["changes"][0]
+    row = paper.load("live").iloc[0]
+    assert row["outcome_exact"] == "win" and row["ambiguous"] == 0 and row["exact_source"] == "yahoo1m"
+    assert I.settle_ambiguous(fetch_fn=lambda sym, day: one)["checked"] == 0           # settled once, not again

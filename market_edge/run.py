@@ -110,6 +110,9 @@ def run_evening(date_arg: str | None = None, no_update: bool = False, force: boo
     recorded = paper.record_from_report(rep)       # today's picks become tomorrow's paper trades
     try:
         exact = intraday.resolve("live", days=5)   # exact scoring from stored intraday bars
+        settled = intraday.settle_ambiguous()      # ambiguous 5-min bars re-checked at 1 minute
+        if settled["checked"]:
+            exact = {**exact, "ambiguous_settled": settled["settled"], "still_ambiguous": settled["still_ambiguous"]}
     except Exception as ex_:
         exact = f"error: {ex_}"
     print(f"paper log: {evaluated} evaluated, {recorded} new · exact: {exact}")
@@ -198,6 +201,7 @@ def main():
     sub.add_parser("backtest")
     sub.add_parser("paper")
     sub.add_parser("telegram-check")
+    sub.add_parser("settle")
     lv = sub.add_parser("live"); lv.add_argument("--poll", type=int, default=60)
     lv.add_argument("--until", default="15:35", help="HH:MM IST to stop (e.g. 12:10 for a morning-only run)")
     ex = sub.add_parser("export-intraday"); ex.add_argument("out"); ex.add_argument("--date")
@@ -247,6 +251,11 @@ def main():
         if late:
             summary.append("sent late: " + ", ".join(late))
         print("refresh:", " | ".join(summary))
+    elif a.cmd == "settle":
+        res = intraday.settle_ambiguous()
+        print("settle:", {k: v for k, v in res.items() if k != "changes"})
+        for line in res["changes"]:
+            print("  ", line)
     elif a.cmd == "telegram-check":
         for line in notify.diagnose_telegram():
             print(line)
