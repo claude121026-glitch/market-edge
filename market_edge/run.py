@@ -216,6 +216,7 @@ def main():
     sub.add_parser("settle")
     ss = sub.add_parser("small-study"); ss.add_argument("--days", type=int, default=55)
     ss.add_argument("--no-intraday", action="store_true")
+    sc = sub.add_parser("small-cache"); sc.add_argument("--k", type=int, default=5)
     lv = sub.add_parser("live"); lv.add_argument("--poll", type=int, default=60)
     lv.add_argument("--until", default="15:35", help="HH:MM IST to stop (e.g. 12:10 for a morning-only run)")
     ex = sub.add_parser("export-intraday"); ex.add_argument("out"); ex.add_argument("--date")
@@ -271,6 +272,15 @@ def main():
         text = small_account.format_report(rep["daily"], rep["intraday"])
         print(text.replace("<b>", "").replace("</b>", ""))
         notify.send(text)
+    elif a.cmd == "small-cache":
+        import os
+        import subprocess
+        from . import small_account
+        for interval, rng, last, name in (("60m", "2y", None, "bars-60m.db"), ("5m", "60d", 60, "bars-5m.db")):
+            path = f"/tmp/{name}"
+            print(small_account.build_cache(path, interval, rng, small_account.cache_symbols(a.k, last)))
+            if os.getenv("GITHUB_ACTIONS"):
+                subprocess.run(["bash", "market_edge/deploy/github/data.sh", "push-file", path], check=False)
     elif a.cmd == "settle":
         res = intraday.settle_ambiguous()
         print("settle:", {k: v for k, v in res.items() if k != "changes"})

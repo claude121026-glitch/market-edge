@@ -21,6 +21,7 @@ import math
 import urllib.parse
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from datetime import time as dtime
 
 import pandas as pd
 
@@ -38,6 +39,9 @@ class Params:
     stop_pct: float = 0.4         # fixed plan: stop distance from entry, % of price
     target_pct: float = 0.5       # fixed plan: target distance from entry, % of price
     candidates: int = 3           # top-ranked picks watched each day
+    side: str = "both"            # "both", "long" or "short"
+    skip_breakouts: bool = False  # skip the "Volume breakout" setup (it faded in the backtest)
+    last_entry: str | None = None  # "HH:MM": no new entry after this time
     label: str = field(default="", compare=False)
 
     @property
@@ -49,7 +53,21 @@ class Params:
             return self.label
         if self.plan == "scan":
             return f"Scanner levels, {self.risk_pct:g}% risk"
-        return f"Fixed: target +{self.target_pct:g}% / stop -{self.stop_pct:g}%"
+        extra = [f"top {self.candidates}"]
+        if self.side != "both":
+            extra.append(f"{self.side}s only")
+        if self.skip_breakouts:
+            extra.append("no volume breakouts")
+        if self.last_entry:
+            extra.append(f"entries until {self.last_entry}")
+        return f"Fixed: target +{self.target_pct:g}% / stop -{self.stop_pct:g}% · " + " · ".join(extra)
+
+
+def filter_cands(cands: list[dict], p: Params) -> list[dict]:
+    out = [c for c in cands if p.side == "both" or (c["direction"] == "bullish") == (p.side == "long")]
+    if p.skip_breakouts:
+        out = [c for c in out if not str(c.get("setup", "")).startswith("Volume breakout")]
+    return out
 
 
 def levels(c: dict, p: Params) -> tuple[float, float, float]:
@@ -87,7 +105,7 @@ def _too_far(direction: str, trigger: float, entry: float, p: Params) -> bool:
 
 def day_daily(cands: list[dict], bars: dict, p: Params) -> dict | None:
     """Daily bars: first candidate (rank order) whose next-day bar triggers. Returns pess/opt results."""
-    for c in cands[:p.candidates]:
+    for c in filter_cands(cands, p)[:p.candidates]:
         bar = bars.get(c["symbol"])
         if not bar:
             continue
@@ -119,7 +137,8 @@ def day_daily(cands: list[dict], bars: dict, p: Params) -> dict | None:
 def day_intraday(cands: list[dict], paths: dict, p: Params) -> dict | None:
     """Real 5-minute paths: the candidate that triggers FIRST is the day's single position."""
     best = None
-    for rank, c in enumerate(cands[:p.candidates]):
+    cutoff = dtime(*map(int, p.last_entry.split(":"))) if p.last_entry else None
+    for rank, c in enumerate(filter_cands(cands, p)[:p.candidates]):
         bars = paths.get(c["symbol"])
         if not bars:
             continue
@@ -132,6 +151,8 @@ def day_intraday(cands: list[dict], paths: dict, p: Params) -> dict | None:
             from_entry = [b for b in bars if b.ts >= f.entry_ts]
             f = intraday.simulate_path(c["direction"], f.entry, s, t, from_entry)
         if f.outcome == "no_entry" or f.entry_ts is None:
+            continue
+        if cutoff and f.entry_ts.time() > cutoff:
             continue
         key = (f.entry_ts, rank)
         if best is None or key < best[0]:
@@ -182,7 +203,7 @@ def summarize(results: list[float], sessions: int, p: Params, costs: list[float]
 # Studies
 # --------------------------------------------------------------------------- #
 def _candidates_by_day(con, source: str = "backtest") -> dict[str, list[dict]]:
-    df = pd.read_sql_query("SELECT signal_date, symbol, direction, rank, score, trigger, stop, target "
+    df = pd.read_sql_query("SELECT signal_date, symbol, direction, rank, score, setup, trigger, stop, target "
                            "FROM paper_trades WHERE source=?", con, params=(source,))
     out = {}
     for d, g in df.groupby("signal_date"):
@@ -432,3 +453,109 @@ def format_plan(top: list[dict], p: Params | None = None) -> str:
                      f"qty {q:,} (₹{q * e:,.0f}) · target ≈{t:,.2f} (+₹{abs(t - e) * q:,.0f}) · stop ≈{s:,.2f} (−₹{abs(e - s) * q:,.0f})")
     lines.append("<i>55-day test: +73% total but a 52% drawdown along the way, best of 5 settings. Paper-trade only.</i>")
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Bar caches for the parameter search (hourly bars ~2 years back, 5-minute ~60 days)
+# --------------------------------------------------------------------------- #
+def build_cache(path: str, interval: str, rng: str, symbols: list[str]) -> dict:
+    import sqlite3
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE IF NOT EXISTS bars (symbol TEXT, date TEXT, ts TEXT, open REAL, high REAL, low REAL, "
+                "close REAL, PRIMARY KEY (symbol, ts))")
+    ok = failed = 0
+    for i, sym in enumerate(symbols, 1):
+        q = urllib.parse.quote(sym, safe="")
+        raw = None
+        for n in (1, 2):
+            try:
+                raw = net.get(f"https://query{n}.finance.yahoo.com/v8/finance/chart/{q}.NS?interval={interval}&range={rng}",
+                              timeout=30, retries=2, backoff=(5, 15))
+                break
+            except Exception:
+                continue
+        if raw is None:
+            failed += 1
+            continue
+        try:
+            bars = intraday.parse_yahoo(json.loads(raw), None)
+        except Exception:
+            failed += 1
+            continue
+        con.executemany("INSERT OR REPLACE INTO bars VALUES (?,?,?,?,?,?,?)",
+                        [(sym, b.ts.date().isoformat(), b.ts.isoformat(), b.open, b.high, b.low, b.close) for b in bars])
+        ok += 1
+        if i % 50 == 0:
+            con.commit()
+            log.info("%s cache: %d/%d symbols", interval, i, len(symbols))
+    con.commit()
+    con.close()
+    return {"interval": interval, "symbols": len(symbols), "ok": ok, "failed": failed}
+
+
+def cache_symbols(k: int = 5, last_days: int | None = None) -> list[str]:
+    con = paper.connect()
+    cands = _candidates_by_day(con)
+    con.close()
+    days = sorted(cands)[-last_days:] if last_days else sorted(cands)
+    return sorted({c["symbol"] for d in days for c in cands[d][:k]})
+
+
+def load_cache(path: str) -> dict[str, dict[str, list]]:
+    import sqlite3
+    out: dict[str, dict[str, list]] = {}
+    for sym, d, ts, o, h, l, c in sqlite3.connect(path).execute("SELECT * FROM bars ORDER BY symbol, ts"):
+        out.setdefault(sym, {}).setdefault(d, []).append(intraday.Bar(datetime.fromisoformat(ts), o, h, l, c))
+    return out
+
+
+def run_on_cache(cache: dict, p: Params, days: list[str] | None = None) -> dict:
+    """Exact-as-the-bars-allow simulation of one setting over the cached days."""
+    con = paper.connect()
+    cands = _candidates_by_day(con)
+    dates = [r[0] for r in con.execute("SELECT DISTINCT date FROM daily ORDER BY date")]
+    con.close()
+    nxt = dict(zip(dates[:-1], dates[1:]))
+    days = days or [d for d in sorted(cands) if d in nxt]
+    res, costs, amb, trades = [], [], 0, []
+    covered = 0
+    for d in days:
+        td = nxt.get(d)
+        if not td:
+            continue
+        pool = cands[d][:12]
+        paths = {c["symbol"]: cache.get(c["symbol"], {}).get(td, []) for c in pool}
+        if not any(paths.values()):
+            continue
+        covered += 1
+        r = day_intraday(pool, paths, p)
+        if r:
+            res.append(r["net"]); costs.append(r["costs"]); amb += int(r["ambiguous"])
+            trades.append({"date": td, "symbol": r["symbol"], "direction": r["direction"], "outcome": r["outcome"],
+                           "net": r["net"], "entry_time": r["entry_time"]})
+    out = summarize(res, covered, p, costs)
+    out["ambiguous"] = amb
+    out["outcomes"] = pd.Series([t["outcome"] for t in trades]).value_counts().to_dict() if trades else {}
+    return {"summary": out, "trades": trades}
+
+
+def grid() -> list[Params]:
+    out = []
+    for tgt in (1.5, 2.0, 2.5, 3.0):
+        for stp in (0.75, 1.0, 1.5, 2.0):
+            if stp > tgt:
+                continue
+            for k in (1, 3, 5):
+                for side in ("both", "long", "short"):
+                    for skip in (False, True):
+                        for cut in (None, "11:15"):
+                            out.append(Params(plan="fixed", target_pct=tgt, stop_pct=stp, candidates=k, side=side,
+                                              skip_breakouts=skip, last_entry=cut))
+    return out
+
+
+def score(s: dict) -> float:
+    """Return relative to the worst drawdown (at least 10% so tiny samples don't look perfect)."""
+    if not s.get("trade_days"):
+        return float("-inf")
+    return s["total_pct"] / max(10.0, s["max_drawdown_pct"])
