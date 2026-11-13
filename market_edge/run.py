@@ -202,6 +202,8 @@ def main():
     sub.add_parser("paper")
     sub.add_parser("telegram-check")
     sub.add_parser("settle")
+    ss = sub.add_parser("small-study"); ss.add_argument("--days", type=int, default=55)
+    ss.add_argument("--no-intraday", action="store_true")
     lv = sub.add_parser("live"); lv.add_argument("--poll", type=int, default=60)
     lv.add_argument("--until", default="15:35", help="HH:MM IST to stop (e.g. 12:10 for a morning-only run)")
     ex = sub.add_parser("export-intraday"); ex.add_argument("out"); ex.add_argument("--date")
@@ -251,6 +253,12 @@ def main():
         if late:
             summary.append("sent late: " + ", ".join(late))
         print("refresh:", " | ".join(summary))
+    elif a.cmd == "small-study":
+        from . import small_account
+        rep = small_account.run_study(a.days, with_intraday=not a.no_intraday)
+        text = small_account.format_report(rep["daily"], rep["intraday"])
+        print(text.replace("<b>", "").replace("</b>", ""))
+        notify.send(text)
     elif a.cmd == "settle":
         res = intraday.settle_ambiguous()
         print("settle:", {k: v for k, v in res.items() if k != "changes"})
