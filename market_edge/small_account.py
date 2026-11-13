@@ -139,12 +139,15 @@ def day_intraday(cands: list[dict], paths: dict, p: Params) -> dict | None:
     if best is None:
         return None
     _, c, f, s = best
+    t = fixed_from_entry(c["direction"], f.entry, p)[1] if p.plan == "fixed" else c["target"]
     q = qty_for(f.entry, s, p)
     if q == 0:
         return None
     net_, cost = paper.pnl(c["direction"], f.entry, f.exit, q)
     return {"symbol": c["symbol"], "direction": c["direction"], "qty": q, "position": round(q * f.entry, 2),
             "entry_time": f.entry_ts.strftime("%H:%M"), "exit_time": f.exit_ts.strftime("%H:%M") if f.exit_ts else None,
+            "entry_ts": f.entry_ts, "exit_ts": f.exit_ts, "entry": round(f.entry, 2), "exit": round(f.exit, 2),
+            "stop": round(s, 2), "target": round(t, 2) if p.plan == "fixed" else round(c["target"], 2),
             "outcome": f.outcome, "ambiguous": f.ambiguous, "net": round(net_, 2), "costs": round(cost, 2)}
 
 
@@ -300,3 +303,132 @@ def run_study(intraday_days: int = 55, with_intraday: bool = True) -> dict:
     config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
     (config.REPORT_DIR / "small_account_study.json").write_text(json.dumps(rep, indent=2, default=str))
     return rep
+
+
+# --------------------------------------------------------------------------- #
+# Live paper account (runs alongside the normal watchlist tracking)
+# --------------------------------------------------------------------------- #
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS small_trades (
+    date TEXT PRIMARY KEY, signal_date TEXT, symbol TEXT, direction TEXT, qty INTEGER, entry REAL, exit REAL,
+    stop REAL, target REAL, outcome TEXT, net REAL, position REAL, entry_time TEXT, exit_time TEXT,
+    ambiguous INTEGER, params TEXT
+);
+"""
+
+
+def live_params() -> Params | None:
+    """The live paper account. Defaults: Rs 10,000, 5x, target +3% / stop -1.5% from the fill, watch the
+    top 3 of the morning watchlist, first trigger only. Override with repository variables; ME_SMALL_ACCOUNT=0 turns it off."""
+    import os
+    if os.getenv("ME_SMALL_ACCOUNT", "1") == "0":
+        return None
+    f = lambda k, d: float(os.getenv(k) or d)  # noqa: E731
+    return Params(capital=f("ME_SMALL_CAPITAL", 10_000), leverage=f("ME_SMALL_LEVERAGE", 5), plan="fixed",
+                  target_pct=f("ME_SMALL_TARGET_PCT", 3.0), stop_pct=f("ME_SMALL_STOP_PCT", 1.5),
+                  candidates=int(f("ME_SMALL_CANDIDATES", 3)))
+
+
+def _con():
+    con = intraday.connect()
+    con.executescript(SCHEMA)
+    return con
+
+
+def candidates_for(con, signal_date: str) -> list[dict]:
+    """Our watchlist for a signal day in morning-rank order (score order if the morning never ranked it)."""
+    rows = con.execute("SELECT symbol, direction, trigger, stop, target, morning_rank, score FROM paper_trades "
+                       "WHERE source='live' AND signal_date=? ORDER BY morning_rank IS NULL, morning_rank, score DESC",
+                       (signal_date,)).fetchall()
+    return [dict(zip(("symbol", "direction", "trigger", "stop", "target", "morning_rank", "score"), r)) for r in rows]
+
+
+def record_recent(days: int = 10, p: Params | None = None, fetch_fn=None) -> list[dict]:
+    """Evening: work out the paper account's single trade for each recent trading day from the intraday
+    paths (the live tracker's bars; Yahoo 5-minute bars if one is missing) and store it once."""
+    p = p or live_params()
+    if p is None:
+        return []
+    con = _con()
+    since = (datetime.now(intraday.IST).date() - pd.Timedelta(days=days)).isoformat()
+    done = {r[0] for r in con.execute("SELECT date FROM small_trades")}
+    out = []
+    for (sd,) in con.execute("SELECT DISTINCT signal_date FROM paper_trades WHERE source='live' AND signal_date>=? "
+                             "ORDER BY signal_date", (since,)).fetchall():
+        td = con.execute("SELECT MIN(date) FROM daily WHERE date > ?", (sd,)).fetchone()[0]
+        if not td or td in done:
+            continue
+        cands = candidates_for(con, sd)[:p.candidates]
+        paths = {}
+        for c in cands:
+            bars = intraday.load_bars(con, c["symbol"], td)
+            if not bars and fetch_fn:
+                try:
+                    bars = fetch_fn(c["symbol"], pd.Timestamp(td).date())
+                except Exception as e:
+                    log.warning("bars for %s %s: %s", c["symbol"], td, e)
+            paths[c["symbol"]] = bars
+        if not any(paths.values()):
+            continue                                    # no intraday data for that day: try again later
+        r = day_intraday(cands, paths, p)
+        row = {"date": td, "signal_date": sd, "params": json.dumps(asdict(p))}
+        if r:
+            row.update({k: r[k] for k in ("symbol", "direction", "qty", "entry", "exit", "stop", "target", "outcome",
+                                          "net", "position", "entry_time", "exit_time")}, ambiguous=int(r["ambiguous"]))
+        else:
+            row.update(outcome="none", net=0.0)
+        cols = ",".join(row)
+        con.execute(f"INSERT OR REPLACE INTO small_trades ({cols}) VALUES ({','.join('?' * len(row))})", tuple(row.values()))
+        out.append(row)
+    con.commit()
+    con.close()
+    return out
+
+
+def live_summary(p: Params | None = None) -> dict | None:
+    p = p or live_params()
+    if p is None:
+        return None
+    con = _con()
+    df = pd.read_sql_query("SELECT * FROM small_trades ORDER BY date", con)
+    con.close()
+    if df.empty:
+        return {"days": 0}
+    traded = df[df["outcome"] != "none"]
+    s = summarize(traded["net"].tolist(), sessions=len(df), p=p)
+    s.update(days=len(df), account_rs=round(p.capital + float(df["net"].sum()), 0),
+             targets=int((traded["outcome"] == "win").sum()), stops=int((traded["outcome"] == "loss").sum()),
+             closes=int((traded["outcome"] == "close").sum()), first=df["date"].iloc[0], last=df["date"].iloc[-1])
+    return s
+
+
+def format_summary(s: dict | None, p: Params | None = None) -> str:
+    p = p or live_params()
+    if not s or not p:
+        return ""
+    if not s.get("days"):
+        return f"<b>💼 ₹{p.capital:,.0f} paper account</b>: no trading days recorded yet."
+    return (f"<b>💼 ₹{p.capital:,.0f} paper account</b> ({s['first']} → {s['last']})\n"
+            f"Account now ₹{s['account_rs']:,.0f} ({s.get('total_pct', 0):+.1f}%) · {s.get('trade_days', 0)} trades in {s['days']} days\n"
+            f"Targets {s['targets']} · stops {s['stops']} · closed at 3:20 {s['closes']} · "
+            f"max drawdown {s.get('max_drawdown_pct', 0)}% · worst day {s.get('worst_day_pct', 0):+.1f}%")
+
+
+def format_plan(top: list[dict], p: Params | None = None) -> str:
+    """Morning: the paper account's rules and today's candidates."""
+    p = p or live_params()
+    if not p or not top:
+        return ""
+    lines = [f"<b>💼 ₹{p.capital:,.0f} account plan for today</b> (5× → ₹{p.max_position:,.0f} position)",
+             f"Watch #1–{p.candidates}. Take the <b>first</b> to trigger, one trade only. Target +{p.target_pct:g}%, "
+             f"stop −{p.stop_pct:g}% from your fill; skip it if it opens more than {p.stop_pct:g}% past the entry. "
+             f"Square off by 3:20 PM."]
+    for i, c in enumerate(top[:p.candidates], 1):
+        long_ = c["direction"] == "bullish"
+        e = c["trigger"]
+        s, t = fixed_from_entry(c["direction"], e, p)
+        q = qty_for(e, s, p)
+        lines.append(f"{i}. {'🟢 BUY' if long_ else '🔴 SHORT'} <b>{c['symbol']}</b> {'above' if long_ else 'below'} {e:,.2f} · "
+                     f"qty {q:,} (₹{q * e:,.0f}) · target ≈{t:,.2f} (+₹{abs(t - e) * q:,.0f}) · stop ≈{s:,.2f} (−₹{abs(e - s) * q:,.0f})")
+    lines.append("<i>55-day test: +73% total but a 52% drawdown along the way, best of 5 settings. Paper-trade only.</i>")
+    return "\n".join(lines)

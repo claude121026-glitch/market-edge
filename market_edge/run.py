@@ -115,6 +115,13 @@ def run_evening(date_arg: str | None = None, no_update: bool = False, force: boo
             exact = {**exact, "ambiguous_settled": settled["settled"], "still_ambiguous": settled["still_ambiguous"]}
     except Exception as ex_:
         exact = f"error: {ex_}"
+    try:
+        from . import small_account
+        small_days = small_account.record_recent(fetch_fn=intraday.fetch_yahoo)
+        if small_days:
+            exact = {**exact, "small_account_days": len(small_days)} if isinstance(exact, dict) else exact
+    except Exception as ex_:
+        logging.error("small account record failed: %s", ex_)
     print(f"paper log: {evaluated} evaluated, {recorded} new · exact: {exact}")
     notify.send(evening_scan.format_telegram(rep), images=_cards(lambda c: c.scan_cards(rep)))
     flows, anns = corporate.fii_dii_summary(), corporate.announcements_for(day)
@@ -163,6 +170,11 @@ def run_morning(force: bool = False) -> bool:
         notify.send(watchlist.format_telegram(top, rep["scan_date"]),
                     images=_cards(lambda c: [c.watchlist_card(top, rep["scan_date"])]))
         _send_chart_analysis(top, rep["scan_date"])
+        from . import small_account
+        plan = small_account.format_plan(top)
+        if plan:
+            notify.send(plan + ("\n\n" + small_account.format_summary(small_account.live_summary())
+                                if small_account.live_summary() else ""))
     _mark("morning", today)
     return True
 
@@ -280,6 +292,11 @@ def main():
         paper.finalize_our_trades()
         paper.evaluate_pending()
         notify.send(paper.format_stats("Our trades (morning top-10 watchlist)", paper.stats(paper.load("live"))))
+        from . import small_account
+        small_account.record_recent(fetch_fn=intraday.fetch_yahoo)
+        txt = small_account.format_summary(small_account.live_summary())
+        if txt:
+            notify.send(txt)
         notify.send(paper.format_stats("Backtest reference", paper.stats(paper.load("backtest"))))
         for src in ("live", "backtest"):
             ex = intraday.exact_stats(src)

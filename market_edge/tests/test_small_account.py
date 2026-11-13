@@ -50,3 +50,60 @@ def test_summary_numbers():
     s = sa.summarize([1000, -500, 0, 1500], sessions=5, p=p, costs=[50, 50, 50, 50])
     assert s["trade_days"] == 4 and s["no_trade_days"] == 1 and s["goal_days_pct"] == 50.0
     assert s["total_rs"] == 2000 and s["max_drawdown_rs"] == 500 and s["worst_day_pct"] == -5.0
+
+
+from market_edge import config, notify, nse, paper  # noqa: E402
+
+
+def _setup_day(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.db")
+    nse.connect().close()
+    rows = [dict(setup="x", signals=[], catalysts=[], wide_stop=False, score=s, symbol=sym, trigger=100.0, stop=98.0,
+                 target=104.0) for sym, s in (("FIRST", 9), ("SECOND", 8), ("THIRD", 7), ("FOURTH", 6))]
+    paper.record_from_report({"scan_date": "2026-11-04", "bearish": [], "bullish": rows})
+    c = paper.connect()
+    c.executemany("UPDATE paper_trades SET morning_rank=? WHERE symbol=?", [(1, "FIRST"), (2, "SECOND"), (3, "THIRD"), (4, "FOURTH")])
+    c.commit(); c.close()
+
+
+def test_live_paper_account_takes_only_the_first_trigger(tmp_path, monkeypatch):
+    _setup_day(tmp_path, monkeypatch)
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda text, **k: sent.append(text) or True)
+    quiet = path((99, 99.5, 99, 99.2), (99.2, 99.6, 99.1, 99.5), (99.5, 99.8, 99.3, 99.6), (99.6, 99.9, 99.4, 99.7))
+    second = path((99, 99.5, 99, 99.4), (99.4, 100.3, 99.3, 100.2), (100.2, 103.2, 100.1, 103.1), (103.1, 103.5, 102.8, 103.3))
+    third = path((99.8, 100.4, 99.7, 100.3), (100.3, 100.5, 98.4, 98.5), (98.5, 98.7, 98.0, 98.2), (98.2, 98.4, 97.9, 98.0))
+    paths = {"FIRST": quiet, "SECOND": second, "THIRD": third, "FOURTH": second}
+    clock = {"t": datetime.combine(DAY, dtime(9, 15), I.IST)}
+    p = sa.Params(plan="fixed", target_pct=3, stop_pct=1.5, candidates=3)
+    I.run_live(poll=300, now_fn=lambda: clock["t"], refresh_fn=None, small=p,
+               sleep_fn=lambda s: clock.__setitem__("t", clock["t"] + timedelta(minutes=5)),
+               fetch_fn=lambda sym, d: ([b for b in paths[sym] if b.ts <= clock["t"]], "test"))
+    text = "\n".join(sent)
+    # THIRD triggered at 09:15, before SECOND (09:20): THIRD is the only trade, stopped out at -1.5%
+    alerts = text.split("Day summary")[0]
+    assert alerts.count("₹10,000 account: BUY") == 1 and "₹10,000 account: BUY THIRD" in alerts   # one trade only
+    assert "🛑 stop hit on <b>THIRD</b>" in text and "of capital" in text
+    assert "₹10,000 account:</b> BUY THIRD" in text                      # in the day summary too
+
+
+def test_record_recent_summary_and_plan(tmp_path, monkeypatch):
+    _setup_day(tmp_path, monkeypatch)
+    con = I.connect()
+    con.execute("INSERT INTO daily (symbol, series, date, close) VALUES ('FIRST','EQ','2026-11-05', 1)")
+    win = path((99.8, 100.4, 99.7, 100.3), (100.3, 103.5, 100.2, 103.4))
+    for sym in ("FIRST", "SECOND", "THIRD"):
+        I.store_bars(con, sym, win if sym == "SECOND" else path((99, 99.2, 98.9, 99.1)), "test")
+    con.commit(); con.close()
+    import pandas as pd
+    monkeypatch.setattr(sa, "datetime", type("D", (sa.datetime,), {"now": classmethod(lambda cls, tz=None: sa.datetime(2026, 11, 6, 19, 0, tzinfo=tz))}))
+    p = sa.Params(plan="fixed", target_pct=3, stop_pct=1.5, candidates=3)
+    rows = sa.record_recent(p=p)
+    assert len(rows) == 1 and rows[0]["symbol"] == "SECOND" and rows[0]["outcome"] == "win" and rows[0]["net"] > 1300
+    assert sa.record_recent(p=p) == []                                   # stored once
+    s = sa.live_summary(p)
+    assert s["days"] == 1 and s["targets"] == 1 and s["account_rs"] > 11300
+    assert "paper account" in sa.format_summary(s, p)
+    top = [{"symbol": "FIRST", "direction": "bullish", "trigger": 500.0, "stop": 490, "target": 520}]
+    plan = sa.format_plan(top, p)
+    assert "qty 100 (₹50,000)" in plan and "target ≈515.00 (+₹1,500)" in plan and "stop ≈492.50 (−₹750)" in plan

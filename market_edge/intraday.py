@@ -303,7 +303,7 @@ def _pull_from_release():
 
 
 def run_live(poll: int = 60, until: dtime = dtime(15, 35), now_fn=lambda: datetime.now(IST),
-             sleep_fn=time.sleep, fetch_fn=fetch_path, refresh_fn="auto") -> dict:
+             sleep_fn=time.sleep, fetch_fn=fetch_path, refresh_fn="auto", small="auto") -> dict:
     con = connect()
     picks = todays_watchlist(con)
     today = now_fn().date()
@@ -323,6 +323,11 @@ def run_live(poll: int = 60, until: dtime = dtime(15, 35), now_fn=lambda: dateti
         notify.send("📡 Live tracker: no watchlist found. Run `evening` (and `morning`) first.")
         return {"tracked": 0}
     state = {p["symbol"] + p["direction"]: {"t": p, "phase": "waiting", "entry": None} for p in picks}
+    from . import small_account
+    small_p = small_account.live_params() if small == "auto" else small
+    small_cands = [s["t"] for s in state.values()][:small_p.candidates] if small_p else []
+    small_syms = {c["symbol"] for c in small_cands}
+    small_state, latest = {"entered": False, "exited": False}, {}
     started = now_fn()
     # A resumed session (e.g. the afternoon job on GitHub) must not repeat alerts for events that
     # happened before it started; it silently catches up instead.
@@ -341,8 +346,8 @@ def run_live(poll: int = 60, until: dtime = dtime(15, 35), now_fn=lambda: dateti
             return {"tracked": 0, "holiday": True}
         for key, s in state.items():
             t = s["t"]
-            if s["phase"] in ("done", "no_entry"):
-                continue
+            if s["phase"] in ("done", "no_entry") and t["symbol"] not in small_syms:
+                continue                        # the paper account may still hold it with its own stop/target
             try:
                 bars, src = fetch_fn(t["symbol"], today)
             except Exception as e:
@@ -352,6 +357,7 @@ def run_live(poll: int = 60, until: dtime = dtime(15, 35), now_fn=lambda: dateti
                 continue
             seen_data = True
             store_bars(con, t["symbol"], bars, src)
+            latest[t["symbol"]] = bars
             f = simulate_path(t["direction"], t["trigger"], t["stop"], t["target"], bars)
             px = bars[-1].close
             bull = t["direction"] == "bullish"
@@ -373,6 +379,22 @@ def run_live(poll: int = 60, until: dtime = dtime(15, 35), now_fn=lambda: dateti
                 if fresh(f.exit_ts):
                     notify.send(f"{emoji} <b>{t['symbol']}</b> {'target' if f.outcome == 'win' else 'stop'} hit @ "
                                 f"{f.exit:,.2f} (entry {s['entry']:,.2f})" + (" · ⚠️ ambiguous bar" if f.ambiguous else ""))
+        if small_p:
+            r = small_account.day_intraday(small_cands, latest, small_p)
+            cap = f"₹{small_p.capital:,.0f} account"
+            if r and not small_state["entered"]:
+                small_state["entered"] = True
+                if fresh(r["entry_ts"]):
+                    long_ = r["direction"] == "bullish"
+                    notify.send(f"💼 <b>{cap}: {'BUY' if long_ else 'SHORT'} {r['symbol']}</b> @ {r['entry']:,.2f} ({r['entry_time']})\n"
+                                f"Qty {r['qty']:,} · position ₹{r['position']:,.0f} · target {r['target']:,.2f} · stop {r['stop']:,.2f}\n"
+                                f"One trade only today: other triggers are ignored.")
+            if r and r["outcome"] in ("win", "loss") and not small_state["exited"]:
+                small_state["exited"] = True
+                if fresh(r["exit_ts"]):
+                    notify.send(f"💼 {cap}: {'✅ target' if r['outcome'] == 'win' else '🛑 stop'} hit on <b>{r['symbol']}</b> "
+                                f"@ {r['exit']:,.2f} ({r['exit_time']}) · P&L ₹{r['net']:+,.0f} "
+                                f"({r['net'] / small_p.capital * 100:+.1f}% of capital)")
         polls += 1
         if now_fn().time() >= SQUARE_OFF:
             break
@@ -403,6 +425,16 @@ def run_live(poll: int = 60, until: dtime = dtime(15, 35), now_fn=lambda: dateti
     lines.append(f"<b>Total: ₹{total:+,.0f}</b> (paper, after costs)")
     if capital:
         lines.append(f"<b>Capital used: {paper.lakh(capital)}</b> · return {total / capital * 100:+.2f}% on capital")
+    if small_p:
+        r = small_account.day_intraday(small_cands, {c["symbol"]: load_bars(con, c["symbol"], today.isoformat())
+                                                      for c in small_cands}, small_p)
+        lines.append("")
+        if r:
+            lines.append(f"<b>💼 ₹{small_p.capital:,.0f} account:</b> {'BUY' if r['direction'] == 'bullish' else 'SHORT'} "
+                         f"{r['symbol']} {r['qty']:,} @ {r['entry']:,.2f} ({r['entry_time']}) → {r['exit']:,.2f} ({r['exit_time']}) · "
+                         f"{r['outcome']} · <b>₹{r['net']:+,.0f} ({r['net'] / small_p.capital * 100:+.1f}%)</b>")
+        else:
+            lines.append(f"<b>💼 ₹{small_p.capital:,.0f} account:</b> no trade (none of the top {small_p.candidates} triggered)")
     notify.send("\n".join(lines))
     return {"tracked": len(state), "total": round(total, 2)}
 

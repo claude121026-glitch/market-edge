@@ -39,6 +39,12 @@ jobs:
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       ME_RISK_PER_TRADE: ${{ vars.ME_RISK_PER_TRADE }}     # optional repo variable, default 1000
       ME_MAX_POSITION: ${{ vars.ME_MAX_POSITION }}         # optional repo variable, default 200000
+      ME_SMALL_ACCOUNT: ${{ vars.ME_SMALL_ACCOUNT }}
+      ME_SMALL_CAPITAL: ${{ vars.ME_SMALL_CAPITAL }}
+      ME_SMALL_LEVERAGE: ${{ vars.ME_SMALL_LEVERAGE }}
+      ME_SMALL_TARGET_PCT: ${{ vars.ME_SMALL_TARGET_PCT }}
+      ME_SMALL_STOP_PCT: ${{ vars.ME_SMALL_STOP_PCT }}
+      ME_SMALL_CANDIDATES: ${{ vars.ME_SMALL_CANDIDATES }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
