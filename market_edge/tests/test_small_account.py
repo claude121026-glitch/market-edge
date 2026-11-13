@@ -107,3 +107,32 @@ def test_record_recent_summary_and_plan(tmp_path, monkeypatch):
     top = [{"symbol": "FIRST", "direction": "bullish", "trigger": 500.0, "stop": 490, "target": 520}]
     plan = sa.format_plan(top, p)
     assert "qty 100 (₹50,000)" in plan and "target ≈515.00 (+₹1,500)" in plan and "stop ≈492.50 (−₹750)" in plan
+
+
+def test_live_defaults_follow_the_search(monkeypatch):
+    for k in ("ME_SMALL_ACCOUNT", "ME_SMALL_TARGET_PCT", "ME_SMALL_STOP_PCT", "ME_SMALL_SIDE", "ME_SMALL_LAST_ENTRY",
+              "ME_SMALL_CANDIDATES", "ME_SMALL_CAPITAL"):
+        monkeypatch.delenv(k, raising=False)
+    p = sa.live_params()
+    assert (p.target_pct, p.stop_pct, p.side, p.last_entry, p.candidates, p.max_position) == (2.5, 0.75, "short", "11:15", 3, 50000)
+    monkeypatch.setenv("ME_SMALL_LAST_ENTRY", "none"); monkeypatch.setenv("ME_SMALL_SIDE", "both")
+    p = sa.live_params()
+    assert p.last_entry is None and p.side == "both"
+
+
+def test_shorts_only_and_cutoff_filters():
+    p = sa.Params(plan="fixed", target_pct=2.5, stop_pct=0.75, candidates=3, side="short", last_entry="11:15")
+    cands = [{"symbol": "UP", "direction": "bullish", "trigger": 100.0, "stop": 95, "target": 110},
+             {"symbol": "LATE", "direction": "bearish", "trigger": 100.0, "stop": 105, "target": 90}]
+    late = path(*[(101, 101.2, 100.8, 101)] * 25, (100.5, 100.6, 99.5, 99.6))     # triggers at 11:20
+    paths = {"UP": path((99.8, 100.5, 99.7, 100.4)), "LATE": late}
+    assert sa.day_intraday(cands, paths, p) is None                                  # long ignored, short too late
+    assert "No shorts only candidates" in sa.format_plan(cands[:1], p)
+    plan = sa.format_plan(cands, p)
+    assert "SHORT <b>LATE</b>" in plan and "UP" not in plan and "no new entry after 11:15" in plan
+
+
+def test_policy_brackets_unknown_bar_order():
+    both = path((99.5, 100.5, 99.4, 100.2), (100.2, 104.5, 97.9, 101))
+    assert I.simulate_path("bullish", 100, 98, 104, both, policy="pess").outcome == "loss"
+    assert I.simulate_path("bullish", 100, 98, 104, both, policy="opt").outcome == "win"

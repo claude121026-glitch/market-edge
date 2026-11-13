@@ -42,6 +42,7 @@ class Params:
     side: str = "both"            # "both", "long" or "short"
     skip_breakouts: bool = False  # skip the "Volume breakout" setup (it faded in the backtest)
     last_entry: str | None = None  # "HH:MM": no new entry after this time
+    policy: str = "pess"          # unknown bar order: "pess" = loss (real reporting), "opt" = favourable (research)
     label: str = field(default="", compare=False)
 
     @property
@@ -143,13 +144,13 @@ def day_intraday(cands: list[dict], paths: dict, p: Params) -> dict | None:
         if not bars:
             continue
         e, s, t = levels(c, p)
-        f = intraday.simulate_path(c["direction"], e, s, t, bars)
+        f = intraday.simulate_path(c["direction"], e, s, t, bars, policy=p.policy)
         if p.plan == "fixed" and f.entry_ts is not None:
             if _too_far(c["direction"], e, f.entry, p):
                 continue
             s, t = fixed_from_entry(c["direction"], f.entry, p)
             from_entry = [b for b in bars if b.ts >= f.entry_ts]
-            f = intraday.simulate_path(c["direction"], f.entry, s, t, from_entry)
+            f = intraday.simulate_path(c["direction"], f.entry, s, t, from_entry, policy=p.policy)
         if f.outcome == "no_entry" or f.entry_ts is None:
             continue
         if cutoff and f.entry_ts.time() > cutoff:
@@ -339,15 +340,17 @@ CREATE TABLE IF NOT EXISTS small_trades (
 
 
 def live_params() -> Params | None:
-    """The live paper account. Defaults: Rs 10,000, 5x, target +3% / stop -1.5% from the fill, watch the
-    top 3 of the morning watchlist, first trigger only. Override with repository variables; ME_SMALL_ACCOUNT=0 turns it off."""
+    """The live paper account. Defaults come from the walk-forward search (Nov 2026): Rs 10,000, 5x,
+    shorts only, target +2.5% / stop -0.75% from the fill, the first of the top 3 to trigger, no entry after
+    11:15. Override with repository variables; ME_SMALL_ACCOUNT=0 turns it off."""
     import os
     if os.getenv("ME_SMALL_ACCOUNT", "1") == "0":
         return None
     f = lambda k, d: float(os.getenv(k) or d)  # noqa: E731
     return Params(capital=f("ME_SMALL_CAPITAL", 10_000), leverage=f("ME_SMALL_LEVERAGE", 5), plan="fixed",
-                  target_pct=f("ME_SMALL_TARGET_PCT", 3.0), stop_pct=f("ME_SMALL_STOP_PCT", 1.5),
-                  candidates=int(f("ME_SMALL_CANDIDATES", 3)))
+                  target_pct=f("ME_SMALL_TARGET_PCT", 2.5), stop_pct=f("ME_SMALL_STOP_PCT", 0.75),
+                  candidates=int(f("ME_SMALL_CANDIDATES", 3)), side=os.getenv("ME_SMALL_SIDE") or "short",
+                  last_entry=(os.getenv("ME_SMALL_LAST_ENTRY") or "11:15") if os.getenv("ME_SMALL_LAST_ENTRY") != "none" else None)
 
 
 def _con():
@@ -379,7 +382,7 @@ def record_recent(days: int = 10, p: Params | None = None, fetch_fn=None) -> lis
         td = con.execute("SELECT MIN(date) FROM daily WHERE date > ?", (sd,)).fetchone()[0]
         if not td or td in done:
             continue
-        cands = candidates_for(con, sd)[:p.candidates]
+        cands = filter_cands(candidates_for(con, sd), p)[:p.candidates]
         paths = {}
         for c in cands:
             bars = intraday.load_bars(con, c["symbol"], td)
@@ -440,18 +443,24 @@ def format_plan(top: list[dict], p: Params | None = None) -> str:
     p = p or live_params()
     if not p or not top:
         return ""
-    lines = [f"<b>💼 ₹{p.capital:,.0f} account plan for today</b> (5× → ₹{p.max_position:,.0f} position)",
-             f"Watch #1–{p.candidates}. Take the <b>first</b> to trigger, one trade only. Target +{p.target_pct:g}%, "
+    picks = filter_cands(top, p)[:p.candidates]
+    side = {"short": "shorts only", "long": "longs only"}.get(p.side, "longs and shorts")
+    lines = [f"<b>💼 ₹{p.capital:,.0f} account plan for today</b> (5× → ₹{p.max_position:,.0f} position, {side})",
+             f"Watch these {len(picks)}. Take the <b>first</b> to trigger, one trade only"
+             + (f", no new entry after {p.last_entry}" if p.last_entry else "") + f". Target +{p.target_pct:g}%, "
              f"stop −{p.stop_pct:g}% from your fill; skip it if it opens more than {p.stop_pct:g}% past the entry. "
              f"Square off by 3:20 PM."]
-    for i, c in enumerate(top[:p.candidates], 1):
+    if not picks:
+        lines.append(f"No {side} candidates in today's watchlist: no trade today.")
+    for i, c in enumerate(picks, 1):
         long_ = c["direction"] == "bullish"
         e = c["trigger"]
         s, t = fixed_from_entry(c["direction"], e, p)
         q = qty_for(e, s, p)
         lines.append(f"{i}. {'🟢 BUY' if long_ else '🔴 SHORT'} <b>{c['symbol']}</b> {'above' if long_ else 'below'} {e:,.2f} · "
                      f"qty {q:,} (₹{q * e:,.0f}) · target ≈{t:,.2f} (+₹{abs(t - e) * q:,.0f}) · stop ≈{s:,.2f} (−₹{abs(e - s) * q:,.0f})")
-    lines.append("<i>55-day test: +73% total but a 52% drawdown along the way, best of 5 settings. Paper-trade only.</i>")
+    lines.append("<i>Search over 1 year (best of 540 settings): unseen last 5 months −₹2,435 … +₹10,723. "
+                 "Wins ≈ +₹1,150, losses ≈ −₹475; needs ~30% wins. Paper-trade only.</i>")
     return "\n".join(lines)
 
 

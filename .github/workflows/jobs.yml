@@ -45,6 +45,8 @@ jobs:
       ME_SMALL_TARGET_PCT: ${{ vars.ME_SMALL_TARGET_PCT }}
       ME_SMALL_STOP_PCT: ${{ vars.ME_SMALL_STOP_PCT }}
       ME_SMALL_CANDIDATES: ${{ vars.ME_SMALL_CANDIDATES }}
+      ME_SMALL_SIDE: ${{ vars.ME_SMALL_SIDE }}
+      ME_SMALL_LAST_ENTRY: ${{ vars.ME_SMALL_LAST_ENTRY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
     steps:
       - uses: actions/checkout@v4

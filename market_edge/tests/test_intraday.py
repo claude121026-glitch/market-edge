@@ -121,7 +121,8 @@ def test_afternoon_resume_does_not_repeat_morning_alerts(tmp_path, monkeypatch):
                      sleep_fn=lambda s: clock.__setitem__("t", clock["t"] + timedelta(hours=1)),
                      fetch_fn=lambda sym, day: (path, "test"))
     text = "\n".join(sent)
-    assert "triggered" not in text and "target hit" not in text and "Live tracker started" not in text
+    assert "triggered @" not in text and "target hit" not in text and "Live tracker started" not in text
+    assert "no short candidates in today's watchlist" in text                  # the Rs 10k account explains itself
     assert "Day summary" in text and res["tracked"] == 1           # afternoon session ends the day
 
 

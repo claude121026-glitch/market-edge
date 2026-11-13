@@ -207,7 +207,9 @@ class PathFill:
 
 
 def simulate_path(direction: str, trigger: float, stop: float, target: float, bars: list[Bar],
-                  square_off: dtime = SQUARE_OFF) -> PathFill:
+                  square_off: dtime = SQUARE_OFF, policy: str = "pess") -> PathFill:
+    """policy decides bars whose order is unknown: "pess" scores them as losses (the default everywhere
+    real results are reported), "opt" as the favourable case (used only to bracket research results)."""
     bull = direction == "bullish"
     bars = [b for b in bars if MARKET_OPEN <= b.ts.time() < MARKET_CLOSE]
     if not bars:
@@ -234,7 +236,7 @@ def simulate_path(direction: str, trigger: float, stop: float, target: float, ba
                 closed_through = (b.close >= entry) if bull else (b.close <= entry)
                 if stop_hit and before_entry and closed_through:
                     stop_hit = False
-                if stop_hit:
+                if stop_hit and policy == "pess":
                     return PathFill("loss", entry, stop, entry_ts, b.ts, ambiguous=True)
                 if tgt_hit:
                     return PathFill("win", entry, target, entry_ts, b.ts)  # trigger then target: same direction
@@ -242,6 +244,8 @@ def simulate_path(direction: str, trigger: float, stop: float, target: float, ba
         stop_hit = b.low <= stop if bull else b.high >= stop
         tgt_hit = b.high >= target if bull else b.low <= target
         if stop_hit and tgt_hit:
+            if policy == "opt":
+                return PathFill("win", entry, target, entry_ts, b.ts, ambiguous=True)
             return PathFill("loss", entry, stop, entry_ts, b.ts, ambiguous=True)
         if stop_hit:
             return PathFill("loss", entry, stop, entry_ts, b.ts)
@@ -325,7 +329,7 @@ def run_live(poll: int = 60, until: dtime = dtime(15, 35), now_fn=lambda: dateti
     state = {p["symbol"] + p["direction"]: {"t": p, "phase": "waiting", "entry": None} for p in picks}
     from . import small_account
     small_p = small_account.live_params() if small == "auto" else small
-    small_cands = [s["t"] for s in state.values()][:small_p.candidates] if small_p else []
+    small_cands = small_account.filter_cands([s["t"] for s in state.values()], small_p)[:small_p.candidates] if small_p else []
     small_syms = {c["symbol"] for c in small_cands}
     small_state, latest = {"entered": False, "exited": False}, {}
     started = now_fn()
@@ -434,7 +438,11 @@ def run_live(poll: int = 60, until: dtime = dtime(15, 35), now_fn=lambda: dateti
                          f"{r['symbol']} {r['qty']:,} @ {r['entry']:,.2f} ({r['entry_time']}) → {r['exit']:,.2f} ({r['exit_time']}) · "
                          f"{r['outcome']} · <b>₹{r['net']:+,.0f} ({r['net'] / small_p.capital * 100:+.1f}%)</b>")
         else:
-            lines.append(f"<b>💼 ₹{small_p.capital:,.0f} account:</b> no trade (none of the top {small_p.candidates} triggered)")
+            side = {"short": "short", "long": "long"}.get(small_p.side, "")
+            why = (f"no {side} candidates in today's watchlist".replace("  ", " ") if not small_cands else
+                   f"none of its {len(small_cands)} {side} candidates triggered".replace("  ", " ")
+                   + (f" by {small_p.last_entry}" if small_p.last_entry else ""))
+            lines.append(f"<b>💼 ₹{small_p.capital:,.0f} account:</b> no trade ({why})")
     notify.send("\n".join(lines))
     return {"tracked": len(state), "total": round(total, 2)}
 
