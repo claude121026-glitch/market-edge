@@ -101,15 +101,15 @@ def test_record_recent_summary_and_plan(tmp_path, monkeypatch):
     rows = sa.record_recent(p=p)
     assert len(rows) == 1 and rows[0]["symbol"] == "SECOND" and rows[0]["outcome"] == "win" and rows[0]["net"] > 1300
     assert sa.record_recent(p=p) == []                                   # stored once
-    p2 = sa.Params(plan="fixed", target_pct=2.5, stop_pct=0.75, candidates=3)
-    redo = sa.record_recent(p=p2)                                        # a new setting re-records the day
-    assert len(redo) == 1 and sa.live_summary(p2)["days"] == 1
     s = sa.live_summary(p)
     assert s["days"] == 1 and s["targets"] == 1 and s["account_rs"] > 11300
     assert "paper account" in sa.format_summary(s, p)
     top = [{"symbol": "FIRST", "direction": "bullish", "trigger": 500.0, "stop": 490, "target": 520}]
     plan = sa.format_plan(top, p)
     assert "qty 100 (₹50,000)" in plan and "target ≈515.00 (+₹1,500)" in plan and "stop ≈492.50 (−₹750)" in plan
+    p2 = sa.Params(plan="fixed", target_pct=2.5, stop_pct=0.75, candidates=3)
+    redo = sa.record_recent(p=p2)                                        # a new setting re-records the day
+    assert len(redo) == 1 and sa.live_summary(p2)["days"] == 1
 
 
 def test_live_defaults_follow_the_search(monkeypatch):
