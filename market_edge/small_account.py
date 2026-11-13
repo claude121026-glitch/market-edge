@@ -509,7 +509,7 @@ def load_cache(path: str) -> dict[str, dict[str, list]]:
     return out
 
 
-def run_on_cache(cache: dict, p: Params, days: list[str] | None = None) -> dict:
+def run_on_cache(cache: dict, p: Params, days: list[str] | None = None, pool_size: int = 5) -> dict:
     """Exact-as-the-bars-allow simulation of one setting over the cached days."""
     con = paper.connect()
     cands = _candidates_by_day(con)
@@ -523,7 +523,7 @@ def run_on_cache(cache: dict, p: Params, days: list[str] | None = None) -> dict:
         td = nxt.get(d)
         if not td:
             continue
-        pool = cands[d][:12]
+        pool = cands[d][:pool_size]               # only the candidates the cache covers
         paths = {c["symbol"]: cache.get(c["symbol"], {}).get(td, []) for c in pool}
         if not any(paths.values()):
             continue
