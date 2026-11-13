@@ -375,7 +375,8 @@ def record_recent(days: int = 10, p: Params | None = None, fetch_fn=None) -> lis
         return []
     con = _con()
     since = (datetime.now(intraday.IST).date() - pd.Timedelta(days=days)).isoformat()
-    done = {r[0] for r in con.execute("SELECT date FROM small_trades")}
+    current = json.dumps(asdict(p))
+    done = {r[0] for r in con.execute("SELECT date FROM small_trades WHERE params=?", (current,))}  # other settings: redo
     out = []
     for (sd,) in con.execute("SELECT DISTINCT signal_date FROM paper_trades WHERE source='live' AND signal_date>=? "
                              "ORDER BY signal_date", (since,)).fetchall():
@@ -395,7 +396,8 @@ def record_recent(days: int = 10, p: Params | None = None, fetch_fn=None) -> lis
         if not any(paths.values()):
             continue                                    # no intraday data for that day: try again later
         r = day_intraday(cands, paths, p)
-        row = {"date": td, "signal_date": sd, "params": json.dumps(asdict(p))}
+        row = {"date": td, "signal_date": sd, "params": current}
+        con.execute("DELETE FROM small_trades WHERE date=?", (td,))
         if r:
             row.update({k: r[k] for k in ("symbol", "direction", "qty", "entry", "exit", "stop", "target", "outcome",
                                           "net", "position", "entry_time", "exit_time")}, ambiguous=int(r["ambiguous"]))
