@@ -36,7 +36,7 @@ if DATA_URL:
     os.environ["ME_DATA_DIR"] = str(CLOUD_ROOT / "data")   # must be set before market_edge.config loads
 
 from market_edge import (config, corporate, events, global_prices, intraday, macro_news,  # noqa: E402
-                         nse, paper, watchlist)
+                         nse, paper, small_account, watchlist)
 
 
 @st.cache_data(ttl=600, show_spinner="Loading the latest data from GitHub…")
@@ -433,6 +433,54 @@ with tabs[5]:
     else:
         st.info("No evaluated trades yet for this source." + (" Run `backtest`." if src != "live" else
                 " Live trades are scored the evening after each signal."))
+
+    small_p = small_account.live_params()
+    if small_p:
+        st.divider()
+        st.subheader(f"💼 ₹{small_p.capital:,.0f} paper account")
+        side = {"short": "shorts only", "long": "longs only"}.get(small_p.side, "longs and shorts")
+        st.caption(f"One trade a day: the first of the top {small_p.candidates} watchlist picks to trigger ({side}"
+                   + (f", no entry after {small_p.last_entry}" if small_p.last_entry else "")
+                   + f"). {small_p.leverage:g}× → ₹{small_p.max_position:,.0f} position, target +{small_p.target_pct:g}% / "
+                   f"stop −{small_p.stop_pct:g}% from the fill, squared off at 3:20. Scored from real intraday bars, "
+                   "after costs.")
+        ss = small_account.live_summary(small_p) or {}
+        if not ss.get("days"):
+            st.info("No trading days recorded yet. The account is scored each evening after the live tracker runs.")
+        else:
+            c = st.columns(4)
+            c[0].metric("Account now", f"₹{ss['account_rs']:,.0f}", f"{ss.get('total_pct', 0):+.1f}%")
+            c[1].metric("Trades / days", f"{ss.get('trade_days', 0)} / {ss['days']}",
+                        f"{ss.get('win_days_pct', 0)}% winning" if ss.get("trade_days") else None, delta_color="off")
+            c[2].metric("Targets · stops · 3:20", f"{ss['targets']} · {ss['stops']} · {ss['closes']}")
+            c[3].metric("Max drawdown", f"{ss.get('max_drawdown_pct', 0)}%",
+                        f"worst day {ss.get('worst_day_pct', 0):+.1f}%" if ss.get("trade_days") else None, delta_color="off")
+            con = small_account._con()
+            try:
+                sdf = pd.read_sql_query("SELECT * FROM small_trades ORDER BY date", con)
+            finally:
+                con.close()
+            eq = sdf[["date"]].copy()
+            eq["account"] = small_p.capital + sdf["net"].fillna(0).cumsum()
+            eq["date"] = pd.to_datetime(eq["date"])
+            line = alt.Chart(eq).mark_line(strokeWidth=2, color=BLUE, point=True).encode(
+                x=alt.X("date:T", title=None), y=alt.Y("account:Q", title="Account ₹", scale=alt.Scale(zero=False)),
+                tooltip=[alt.Tooltip("date:T"), alt.Tooltip("account:Q", format=",.0f")])
+            base = alt.Chart(pd.DataFrame({"y": [small_p.capital]})).mark_rule(color=MUTED, strokeDash=[4, 4]).encode(y="y:Q")
+            chart(line + base, height=240)
+            outcome = {"win": "✅ target", "loss": "🛑 stop", "close": "⏹ 3:20 close", "none": "— no trade"}
+            t = pd.DataFrame({
+                "Date": sdf["date"], "Stock": sdf["symbol"].fillna("—"),
+                "Side": sdf["direction"].map({"bullish": "BUY", "bearish": "SHORT"}).fillna("—"),
+                "Qty": sdf["qty"].astype("Int64"), "Entry": sdf["entry"], "Exit": sdf["exit"],
+                "Times": (sdf["entry_time"].fillna("") + " → " + sdf["exit_time"].fillna("")).where(sdf["entry_time"].notna(), ""),
+                "Result": sdf["outcome"].map(outcome).fillna(sdf["outcome"])
+                          + sdf["ambiguous"].fillna(0).astype(int).map({1: " (ambiguous)", 0: ""}),
+                "P&L ₹": sdf["net"].round(0)}).iloc[::-1]
+            st.dataframe(t, hide_index=True, use_container_width=True,
+                         column_config={"Entry": st.column_config.NumberColumn(format="%.2f"),
+                                        "Exit": st.column_config.NumberColumn(format="%.2f"),
+                                        "P&L ₹": st.column_config.NumberColumn(format="%+.0f")})
 
     edge = (read_json(str(paper.EDGE_JSON)) or {}).get("setups")
     if edge:
