@@ -11,9 +11,11 @@ def test_costs_realistic_for_1_lakh_round_trip():
     assert 75 < c < 95            # brokerage 40 + STT 25 + exch ~6 + stamp 3 + GST ~8
 
 
-def test_position_size_respects_risk_and_cap():
+def test_position_size_respects_risk_and_cap(monkeypatch):
     assert paper.size(100, 98) == 500                  # Rs 1000 risk / Rs 2 per share
-    assert paper.size(100, 99.99) == 2000              # capped by Rs 2 lakh exposure
+    assert paper.size(100, 99.9) == 10_000             # no capital cap by default: sized on risk only
+    monkeypatch.setattr(config, "MAX_POSITION_VALUE", 200_000)
+    assert paper.size(100, 99.9) == 2000               # ME_MAX_POSITION caps the exposure
 
 
 @pytest.mark.parametrize("bar,mode,expected", [

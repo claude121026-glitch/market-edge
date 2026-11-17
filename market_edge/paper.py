@@ -162,33 +162,17 @@ def record_from_report(rep: dict, source: str = "live") -> int:
 
 
 def finalize_our_trades() -> dict:
-    """Our trades are the morning top-10 watchlist only. Once a signal day's trade day is in the data,
-    the other scan picks are moved to source 'scan_only' (kept for reference, excluded from every
-    result and capital figure). If the morning never ranked a day, the live tracker's fallback is used:
-    the top WATCHLIST_SIZE by score."""
+    """Every scan pick is one of our trades (the morning top-10 is only a ranking). Picks that an earlier
+    version moved to source 'scan_only' (top-10-only period, 12-17 Nov 2026) are moved back, still pending,
+    so the evening scores them like any other trade."""
     con = connect()
-    latest = con.execute("SELECT MAX(date) FROM daily").fetchone()[0]
-    days = [r[0] for r in con.execute(
-        "SELECT DISTINCT signal_date FROM paper_trades WHERE source IN ('live','scan_only')")]
-    done_days = moved = 0
-    for sd in days:
-        td = con.execute("SELECT MIN(date) FROM daily WHERE date > ?", (sd,)).fetchone()[0]
-        if not td or not latest or td > latest:
-            continue                                   # not traded yet: keep every pick available
-        rows = con.execute("SELECT source, symbol, direction, morning_rank, score FROM paper_trades "
-                           "WHERE source IN ('live','scan_only') AND signal_date=?", (sd,)).fetchall()
-        ranked = {(s, d) for _, s, d, mr, _ in rows if mr is not None}
-        ours = ranked or {(s, d) for _, s, d, _, _ in sorted(rows, key=lambda r: -(r[4] or 0))[:config.WATCHLIST_SIZE]}
-        for src, s, d, _, _ in rows:
-            want = "live" if (s, d) in ours else "scan_only"
-            if src != want:
-                con.execute("UPDATE paper_trades SET source=? WHERE source=? AND signal_date=? AND symbol=? AND direction=?",
-                            (want, src, sd, s, d))
-                moved += 1
-        done_days += 1
+    cur = con.execute("UPDATE paper_trades SET source='live' WHERE source='scan_only' AND NOT EXISTS ("
+                      "SELECT 1 FROM paper_trades p WHERE p.source='live' AND p.signal_date=paper_trades.signal_date "
+                      "AND p.symbol=paper_trades.symbol AND p.direction=paper_trades.direction)")
+    moved = cur.rowcount
     con.commit()
     con.close()
-    return {"days": done_days, "moved": moved}
+    return {"moved": moved}
 
 
 def evaluate_pending() -> int:

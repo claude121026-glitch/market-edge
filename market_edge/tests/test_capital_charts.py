@@ -26,9 +26,10 @@ def test_watchlist_carries_capital_and_total(monkeypatch, tmp_path):
     top = watchlist.build(rep, {"label": "Neutral"}, [], record=False)
     by = {p["symbol"]: p for p in top}
     assert by["A"]["qty"] == 500 and by["A"]["capital"] == 50000.0
-    assert by["B"]["qty"] == 200 and by["B"]["capital"] == 200000.0          # capped at Rs 2 lakh exposure
+    assert by["B"]["qty"] == 1000 and by["B"]["capital"] == 1000000.0        # no capital cap: Rs 1000 / Rs 1 risk
     text = watchlist.format_telegram(top, "2026-11-04")
-    assert "Qty 500 · capital ₹50,000" in text and "Capital if all 2 trigger: ₹2.50 lakh" in text
+    assert "Qty 500 · capital ₹50,000" in text and "Capital if all 2 trigger: ₹10.50 lakh" in text
+    assert "no capital cap" in text and "every scan pick" in text
     assert cards.watchlist_card(top, "2026-11-04").startswith(PNG)
 
 
@@ -116,7 +117,7 @@ def _report(day, n):
     return {"scan_date": day, "bearish": [], "bullish": [{**row, "symbol": f"S{i}", "score": float(n - i)} for i in range(n)]}
 
 
-def test_only_the_top10_watchlist_counts_as_our_trades(tmp_path, monkeypatch):
+def test_every_scan_pick_counts_as_our_trade(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.db")
     con = nse.connect()
     for d in ("2026-11-05", "2026-11-06", "2026-11-09"):
@@ -126,29 +127,13 @@ def test_only_the_top10_watchlist_counts_as_our_trades(tmp_path, monkeypatch):
     paper.record_from_report(_report("2026-11-05", 25))                      # traded on 11-06
     c = paper.connect()
     c.executemany("UPDATE paper_trades SET morning_rank=? WHERE signal_date='2026-11-05' AND symbol=?",
-                  [(i + 1, f"S{i * 2}") for i in range(10)])                 # the morning picked 10 of them
+                  [(i + 1, f"S{i * 2}") for i in range(10)])                 # the morning ranked 10 of them
+    c.execute("UPDATE paper_trades SET source='scan_only' WHERE morning_rank IS NULL")   # old top-10-only rule
     c.commit(); c.close()
-    paper.record_from_report(_report("2026-11-09", 25))                      # not traded yet
-    res = paper.finalize_our_trades()
-    assert res == {"days": 1, "moved": 15}
-    live = paper.load("live")
-    assert set(live[live.signal_date == "2026-11-05"].symbol) == {f"S{i * 2}" for i in range(10)}
-    assert len(live[live.signal_date == "2026-11-09"]) == 25                 # untouched until it is traded
-    assert len(paper.load("scan_only")) == 15
-    assert paper.evaluate_pending() == 10                                    # only our trades are scored
-    s = paper.stats(paper.load("live"))
-    assert s["signals"] == 35 and s["entered"] == 10                          # 10 traded + 25 still pending
-    assert paper.finalize_our_trades()["moved"] == 0                          # idempotent
-
-
-def test_unranked_day_falls_back_to_top_scores(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.db")
-    con = nse.connect()
-    con.executemany("INSERT INTO daily (symbol, series, date, close) VALUES (?, 'EQ', '2026-11-06', 1)", [(f"S{i}", ) for i in range(25)])
-    con.commit()
-    paper.record_from_report(_report("2026-11-05", 25))
-    paper.finalize_our_trades()
-    assert set(paper.load("live").symbol) == {f"S{i}" for i in range(config.WATCHLIST_SIZE)}   # highest scores
+    assert paper.finalize_our_trades() == {"moved": 15}                      # brought back as our trades
+    assert len(paper.load("live")) == 25 and paper.load("scan_only").empty
+    assert paper.evaluate_pending() == 25                                    # all of them are scored
+    assert paper.finalize_our_trades() == {"moved": 0}                       # idempotent
 
 
 def test_traded_watchlist_is_never_re_ranked(tmp_path, monkeypatch):

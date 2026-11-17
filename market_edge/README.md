@@ -100,10 +100,11 @@ running `evening` daily.
 | `evening` (daily) | Scores yesterday's paper trades against today's prices, then records today's picks as pending trades |
 | `morning` (daily) | Re-ranks picks into a **top-10 watchlist** using catalysts, macro mood, sector tilt and the setup's track record |
 | `backtest` | Replays the scan over the stored history, with a random-stock baseline, and refreshes the setup track record |
-| `paper` | Live paper results (all picks and the morning top 10) next to the backtest |
+| `paper` | Live paper results for every scan pick, next to the backtest |
 
 **Trade plan simulated:** enter on a break of the signal day's high (long) or low (short) the next session.
-The stop is the pivot, the target 2R, and the position is squared off at the close. Sizing uses ₹1,000 risk per trade, capped at ₹2 lakh exposure.
+The stop is the pivot, the target 2R, and the position is squared off at the close. Sizing uses ₹1,000 risk per trade with no capital cap (set `ME_MAX_POSITION` to cap the exposure per trade).
+Every scan pick is paper-traded; the morning top 10 is only a ranking.
 Indian intraday costs (brokerage, STT, exchange, SEBI, stamp, GST) and 0.05% slippage each way are deducted.
 Rates are in `config.py`; check them against your broker.
 

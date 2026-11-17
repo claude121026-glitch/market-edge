@@ -113,7 +113,10 @@ def test_record_recent_summary_and_plan(tmp_path, monkeypatch):
 
 
 def test_live_defaults_follow_the_search(monkeypatch):
-    for k in ("ME_SMALL_ACCOUNT", "ME_SMALL_TARGET_PCT", "ME_SMALL_STOP_PCT", "ME_SMALL_SIDE", "ME_SMALL_LAST_ENTRY",
+    monkeypatch.delenv("ME_SMALL_ACCOUNT", raising=False)
+    assert sa.live_params() is None                                      # off by default
+    monkeypatch.setenv("ME_SMALL_ACCOUNT", "1")
+    for k in ("ME_SMALL_TARGET_PCT", "ME_SMALL_STOP_PCT", "ME_SMALL_SIDE", "ME_SMALL_LAST_ENTRY",
               "ME_SMALL_CANDIDATES", "ME_SMALL_CAPITAL"):
         monkeypatch.delenv(k, raising=False)
     p = sa.live_params()

@@ -105,11 +105,11 @@ def run_evening(date_arg: str | None = None, no_update: bool = False, force: boo
     corp = corporate.run(date.fromisoformat(day))
     evening_scan.attach_catalysts(rep, corporate.catalysts_by_symbol(day))
     (config.REPORT_DIR / f"evening_{day}.json").write_text(json.dumps(rep, indent=2, default=str))
-    paper.finalize_our_trades()                    # only the morning top-10 count as our trades
+    restored = paper.finalize_our_trades()["moved"]  # every scan pick is one of our trades
     evaluated = paper.evaluate_pending()           # yesterday's picks vs today's prices
     recorded = paper.record_from_report(rep)       # today's picks become tomorrow's paper trades
     try:
-        exact = intraday.resolve("live", days=5)   # exact scoring from stored intraday bars
+        exact = intraday.resolve("live", days=30 if restored else 5)   # exact scoring from intraday bars
         settled = intraday.settle_ambiguous()      # ambiguous 5-min bars re-checked at 1 minute
         if settled["checked"]:
             exact = {**exact, "ambiguous_settled": settled["settled"], "still_ambiguous": settled["still_ambiguous"]}
@@ -301,7 +301,7 @@ def main():
     elif a.cmd == "paper":
         paper.finalize_our_trades()
         paper.evaluate_pending()
-        notify.send(paper.format_stats("Our trades (morning top-10 watchlist)", paper.stats(paper.load("live"))))
+        notify.send(paper.format_stats("Our trades (all scan picks)", paper.stats(paper.load("live"))))
         from . import small_account
         small_account.record_recent(fetch_fn=intraday.fetch_yahoo)
         txt = small_account.format_summary(small_account.live_summary())

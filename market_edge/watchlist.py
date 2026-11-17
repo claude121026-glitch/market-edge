@@ -101,7 +101,9 @@ def format_telegram(top: list[dict], scan_date: str) -> str:
                      f"   {_hist(p.get('history'))}")
     total = sum(p["capital"] for p in top)
     lines.append(f"\n<b>Capital if all {len(top)} trigger: {paper.lakh(total)}</b> "
-                 f"(₹{config.RISK_PER_TRADE:,.0f} risk per trade, max {paper.lakh(config.MAX_POSITION_VALUE)} each)")
+                 f"(₹{config.RISK_PER_TRADE:,.0f} risk per trade"
+                 + (f", max {paper.lakh(config.MAX_POSITION_VALUE)} each)" if config.MAX_POSITION_VALUE < float("inf") else ", no capital cap)"))
+    lines.append("<i>Ranking only: every scan pick is paper-traded and scored, not just these 10.</i>")
     lines.append("<i>Backtest (1 yr): this plan had no proven edge after costs. Paper-trade only.</i>")
     return "\n".join(lines)
 

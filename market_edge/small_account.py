@@ -342,9 +342,9 @@ CREATE TABLE IF NOT EXISTS small_trades (
 def live_params() -> Params | None:
     """The live paper account. Defaults come from the walk-forward search (Nov 2026): Rs 10,000, 5x,
     shorts only, target +2.5% / stop -0.75% from the fill, the first of the top 3 to trigger, no entry after
-    11:15. Override with repository variables; ME_SMALL_ACCOUNT=0 turns it off."""
+    11:15. Off by default (Nov 2026); set the repository variable ME_SMALL_ACCOUNT=1 to turn it back on."""
     import os
-    if os.getenv("ME_SMALL_ACCOUNT", "1") == "0":
+    if os.getenv("ME_SMALL_ACCOUNT", "0") != "1":
         return None
     f = lambda k, d: float(os.getenv(k) or d)  # noqa: E731
     return Params(capital=f("ME_SMALL_CAPITAL", 10_000), leverage=f("ME_SMALL_LEVERAGE", 5), plan="fixed",

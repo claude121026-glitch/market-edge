@@ -104,7 +104,8 @@ EVENTS_JSON = DATA_DIR / "events.json"
 
 # ---- Paper trading (step 5) ---------------------------------------------- #
 RISK_PER_TRADE = float(os.getenv("ME_RISK_PER_TRADE") or 1000)        # Rs lost if stop is hit
-MAX_POSITION_VALUE = float(os.getenv("ME_MAX_POSITION") or 200000)   # Rs exposure cap per trade (capital used)
+# Rs exposure cap per trade. No cap by default (sized on risk only); set ME_MAX_POSITION, e.g. 200000, to cap it.
+MAX_POSITION_VALUE = float(os.getenv("ME_MAX_POSITION") or "inf")
 SLIPPAGE_PCT = 0.05            # % adverse slippage on entry and on exit
 # Approximate Indian intraday equity costs (discount broker). Check your broker's current rates.
 BROKERAGE_PCT, BROKERAGE_MAX = 0.03, 20.0   # per order: min(0.03%, Rs 20)

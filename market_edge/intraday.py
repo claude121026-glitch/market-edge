@@ -276,18 +276,15 @@ def score_exact(con: sqlite3.Connection, trade: dict, bars: list[Bar], source: s
 # Live tracker
 # --------------------------------------------------------------------------- #
 def todays_watchlist(con: sqlite3.Connection) -> list[dict]:
-    """Morning top-10 for the latest signal date (falls back to the scan's top 10 if morning didn't run)."""
+    """Every scan pick for the latest signal date (all are our trades): morning top-10 first, in rank order,
+    then the rest by score."""
     con.row_factory = sqlite3.Row
     last = con.execute("SELECT MAX(signal_date) FROM paper_trades WHERE source='live'").fetchone()[0]
     if not last:
         return []
     rows = [dict(r) for r in con.execute(
-        "SELECT * FROM paper_trades WHERE source='live' AND signal_date=? AND morning_rank IS NOT NULL "
-        "ORDER BY morning_rank", (last,))]
-    if not rows:
-        rows = [dict(r) for r in con.execute(
-            "SELECT * FROM paper_trades WHERE source='live' AND signal_date=? ORDER BY score DESC LIMIT ?",
-            (last, config.WATCHLIST_SIZE))]
+        "SELECT * FROM paper_trades WHERE source='live' AND signal_date=? "
+        "ORDER BY morning_rank IS NULL, morning_rank, score DESC", (last,))]
     con.row_factory = None
     return rows
 
