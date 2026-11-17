@@ -67,7 +67,14 @@ jobs:
 
       - name: Upload this session's intraday bars
         if: always()
+        # Each run gets its own file (run id in the name), so a late or repeated run can never overwrite
+        # bars an earlier run saved; the evening job merges every intraday-DAY-*.db file. Empty files are skipped.
         run: |
-          f="/tmp/intraday-$(date +%Y%m%d)-${{ steps.s.outputs.session }}.db"
-          python -m market_edge.run export-intraday "$f"
-          bash market_edge/deploy/github/data.sh push-file "$f"
+          f="/tmp/intraday-$(date +%Y%m%d)-${{ steps.s.outputs.session }}-${{ github.run_id }}-${{ github.run_attempt }}.db"
+          out=$(python -m market_edge.run export-intraday "$f"); echo "$out"
+          n=$(echo "$out" | grep -oE '[0-9]+$' || echo 0)
+          if [[ "${n:-0}" -gt 0 ]]; then
+            bash market_edge/deploy/github/data.sh push-file "$f"
+          else
+            echo "No intraday bars this session: nothing uploaded (keeps any earlier file intact)."
+          fi
