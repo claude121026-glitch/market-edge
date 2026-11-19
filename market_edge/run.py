@@ -106,6 +106,7 @@ def run_evening(date_arg: str | None = None, no_update: bool = False, force: boo
     evening_scan.attach_catalysts(rep, corporate.catalysts_by_symbol(day))
     (config.REPORT_DIR / f"evening_{day}.json").write_text(json.dumps(rep, indent=2, default=str))
     restored = paper.finalize_our_trades()["moved"]  # every scan pick is one of our trades
+    restored += paper.resize_scored()              # trades sized under the old capital cap: re-size
     evaluated = paper.evaluate_pending()           # yesterday's picks vs today's prices
     recorded = paper.record_from_report(rep)       # today's picks become tomorrow's paper trades
     try:
@@ -300,6 +301,8 @@ def main():
                   f"{v['quarters_positive']}/{v['quarters']} qtrs  n={v['n']}")
     elif a.cmd == "paper":
         paper.finalize_our_trades()
+        if paper.resize_scored():
+            intraday.resolve("live", days=30)
         paper.evaluate_pending()
         notify.send(paper.format_stats("Our trades (all scan picks)", paper.stats(paper.load("live"))))
         from . import small_account

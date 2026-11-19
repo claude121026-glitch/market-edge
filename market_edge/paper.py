@@ -175,6 +175,32 @@ def finalize_our_trades() -> dict:
     return {"moved": moved}
 
 
+def resize_scored(source: str = "live") -> int:
+    """Re-size trades scored under an older sizing rule (e.g. the Rs 2 lakh cap, before 18 Nov 2026) to the
+    current one. Daily-bar P&L is recomputed from the stored fills; the exact intraday result is cleared so
+    intraday.resolve() re-scores it with the new quantity. Idempotent."""
+    con = connect()
+    con.row_factory = sqlite3.Row
+    rows = [dict(r) for r in con.execute(
+        "SELECT * FROM paper_trades WHERE source=? AND status='evaluated' AND entry IS NOT NULL", (source,))]
+    risk, n = config.RISK_PER_TRADE, 0
+    for r in rows:
+        q = size(r["entry"], r["stop"])
+        if q == 0 or q == r["qty"]:
+            continue
+        np_, ch = pnl(r["direction"], r["entry"], r["exit_pess"], q)
+        no_, _ = pnl(r["direction"], r["entry"], r["exit_opt"], q)
+        con.execute("UPDATE paper_trades SET qty=?, costs=?, net_pess=?, r_pess=?, net_opt=?, r_opt=?, "
+                    "outcome_exact=NULL, exit_exact=NULL, net_exact=NULL, r_exact=NULL, ambiguous=NULL, "
+                    "exact_source=NULL WHERE source=? AND signal_date=? AND symbol=? AND direction=?",
+                    (q, round(ch, 2), round(np_, 2), round(np_ / risk, 3), round(no_, 2), round(no_ / risk, 3),
+                     source, r["signal_date"], r["symbol"], r["direction"]))
+        n += 1
+    con.commit()
+    con.close()
+    return n
+
+
 def evaluate_pending() -> int:
     """Score pending trades whose next session's data is now available."""
     con = connect()

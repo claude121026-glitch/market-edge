@@ -178,3 +178,21 @@ def test_re_rank_before_trading_replaces_the_old_ranking(tmp_path, monkeypatch):
     watchlist.build(rep, {"label": "Neutral"}, [], record=True)
     ranked = paper.load("live")["morning_rank"].notna().sum()
     assert ranked == config.WATCHLIST_SIZE                                    # exactly 10, old ranks cleared
+
+
+def test_trades_scored_under_the_old_cap_are_resized(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.db")
+    paper.record_from_report(_report("2026-11-12", 1))
+    I.connect().close()                                   # adds the exact-result columns
+    c = paper.connect()                                   # scored on 13 Nov with the Rs 2 lakh cap: 2000 shares
+    c.execute("UPDATE paper_trades SET status='evaluated', trade_date='2026-11-13', entry=100, qty=2000, "
+              "stop=99.8, exit_pess=99.8, exit_opt=100.4, outcome_exact='win', net_exact=1, exact_source='yahoo5m'")
+    c.commit(); c.close()
+    assert paper.resize_scored() == 1
+    r = paper.load("live").iloc[0]
+    q = paper.size(100, 99.8)
+    assert q > 4900 and r["qty"] == q                     # ~Rs 1000 / Rs 0.20 risk, no cap
+    assert r["net_pess"] == round(paper.pnl("bullish", 100, 99.8, q)[0], 2)
+    assert r["net_opt"] == round(paper.pnl("bullish", 100, 100.4, q)[0], 2)
+    assert pd.isna(r["outcome_exact"])                    # re-scored by intraday.resolve with the new size
+    assert paper.resize_scored() == 0                     # idempotent
